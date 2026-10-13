@@ -53,7 +53,7 @@ jobs:
     environment: "production"
 
     if: >-
-      github.ref == 'refs/heads/' + "main" &&
+      github.ref == 'refs/heads/main' &&
       (
         github.event_name == 'push' ||
         github.event_name == 'workflow_dispatch'
