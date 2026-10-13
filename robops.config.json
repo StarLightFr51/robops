@@ -2,5 +2,5 @@
   "workflow_name": "Roblox CI/CD",
   "branch": "main",
   "build_path": "build/game.rbxlx",
-  "env": "production"
+  "environnement": "production"
 }

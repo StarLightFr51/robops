@@ -1,131 +1,31 @@
 import json 
 from pathlib import Path
+import generator
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / "robops.config.json"
 OUTPUT_FILE = ROOT / ".github" / "workflows" / "deploy.yml"
+METADATA_FILE = ROOT / "robops.metadata.json"
 
-def generate_workflow(config: dict) -> str:
-    name = json.dumps(config["workflow_name"])
-    branch = json.dumps(config["branch"])
-    build_path = json.dumps(config["build_path"])
-    environment = json.dumps(config["env"])
-    publish_branch = config["branch"]
-
-    return f"""name: {name}
-
-on:
-  pull_request:
-    branches:
-      - {branch}
-
-  push:
-    branches:
-      - {branch}
-
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: roblox-production
-  cancel-in-progress: false
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Install Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Prepare Rokit
-        run: mkdir -p .rokit-bootstrap
-
-      - name: Install Rokit
-        uses: paradoxum-games/setup-rokit@v3
-        with:
-          path: .
-          cache: true
-
-      - name: Install Rojo
-        run: rokit install --no-trust-check
-
-      - name: Verify Rojo
-        run: rojo --version
-
-      - name: Build Roblox place
-        run: |
-          mkdir -p build
-          rojo build default.project.json -o "build/game.rbxlx"
-          test -s "build/game.rbxlx"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: roblox-place
-          path: "build/game.rbxlx"
-          retention-days: 14
-
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    environment: {environment}
-
-    if: >-
-      github.ref == 'refs/heads/{publish_branch}' &&
-      (
-        github.event_name == 'push' ||
-        github.event_name == 'workflow_dispatch'
-      )
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Download built Roblox place
-        uses: actions/download-artifact@v4
-        with:
-          name: roblox-place
-          path: build
-
-      - name: Publish to Roblox
-        env:
-          API_KEY: ${{{{ secrets.ROBLOX_API_KEY }}}}
-          UNIVERSE_ID: ${{{{ secrets.ROBLOX_UNIVERSE_ID }}}}
-          PLACE_ID: ${{{{ secrets.ROBLOX_PLACE_ID }}}}
-        run: |
-          set -euo pipefail
-
-          response="$(mktemp)"
-          trap 'rm -f "$response"' EXIT
-
-          status="$(curl --silent --show-error \\
-            --output "$response" \\
-            --write-out '%{{http_code}}' \\
-            --request POST \\
-            "https://apis.roblox.com/universes/v1/$UNIVERSE_ID/places/$PLACE_ID/versions?versionType=Published" \\
-            --header "x-api-key: $API_KEY" \\
-            --header "Content-Type: application/xml" \\
-            --data-binary "@{build_path}"
-
-          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
-            echo "Publication failed: HTTP $status"
-            cat "$response"
-            exit 1
-          fi
-
-          echo "Publication successful"
-          cat "$response"
-"""
+METADATA = {
+  "robops_version": 1.0, #need to request from version on github
+}
 
 def main():
+    if not Path.exists(CONFIG_FILE):
+      raise FileNotFoundError("""robops.config.json not in specified directory. 
+      To generate your robops file please add this file and add inside it the required values""")
+
+    if not Path.exists(METADATA_FILE):
+      METADATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+      METADATA_FILE.write_text(json.dumps(METADATA))
+
+    with METADATA_FILE.open("r", encoding="utf-8") as file:
+      metadata = json.load(file)
+
+      if METADATA["robops_version"] != metadata["robops_version"] :
+        print("Careful your version is not updated, please install the newest version if you want, new features and get new security updates")
+
     with CONFIG_FILE.open("r", encoding="utf-8") as file: 
         config = json.load(file)
 
@@ -133,14 +33,14 @@ def main():
         "workflow_name",
         "branch",
         "build_path",
-        "env",
+        "environnement",
     }
 
     missing = required - config.keys()
     if missing:
         raise ValueError(f"Missing configuration keys: {sorted(missing)}")
 
-    workflow = generate_workflow(config)
+    workflow = generator.generate_workflow(config)
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(workflow, encoding="utf-8")
