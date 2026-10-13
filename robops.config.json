@@ -1,7 +1,6 @@
 {
   "workflow_name": "Roblox CI/CD",
   "branch": "main",
-  "rojo_version": "7.4.4",
   "build_path": "build/game.rbxlx",
   "env": "production"
 }

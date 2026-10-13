@@ -73,17 +73,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Install Rojo
-        run: |
-          cargo install rojo --version "7.4.4" --locked
-
-      - name: Build release
-        run: |
-          mkdir -p build
-          rojo build default.project.json -o "build/game.rbxlx"
-          test -s "build/game.rbxlx"
+      - name: Download built Roblox place
+        uses: actions/download-artifact@v4
+        with:
+          name: roblox-place
+          path: build
 
       - name: Publish to Roblox
         env:
@@ -103,7 +99,7 @@ jobs:
             "https://apis.roblox.com/universes/v1/$UNIVERSE_ID/places/$PLACE_ID/versions?versionType=Published" \
             --header "x-api-key: $API_KEY" \
             --header "Content-Type: application/xml" \
-            --data-binary @"build/game.rbxlx")"
+            --data-binary "@"build/game.rbxlx""
 
           if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
             echo "Publication failed: HTTP $status"

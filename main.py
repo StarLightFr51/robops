@@ -2,15 +2,15 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CONFIG_FILE = ROOT / "config.json"
+CONFIG_FILE = ROOT / "robops.config.json"
 OUTPUT_FILE = ROOT / ".github" / "workflows" / "deploy.yml"
 
 def generate_workflow(config: dict) -> str:
     name = json.dumps(config["workflow_name"])
     branch = json.dumps(config["branch"])
-    rojo_version = json.dumps(config["rojo_version"])
     build_path = json.dumps(config["build_path"])
     environment = json.dumps(config["env"])
+    publish_branch = config["branch"]
 
     return f"""name: {name}
 
@@ -63,14 +63,14 @@ jobs:
       - name: Build Roblox place
         run: |
           mkdir -p build
-          rojo build default.project.json -o {build_path}
-          test -s {build_path}
+          rojo build default.project.json -o "build/game.rbxlx"
+          test -s "build/game.rbxlx"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: roblox-place
-          path: {build_path}
+          path: "build/game.rbxlx"
           retention-days: 14
 
   publish:
@@ -79,7 +79,7 @@ jobs:
     environment: {environment}
 
     if: >-
-      github.ref == 'refs/heads/main' &&
+      github.ref == 'refs/heads/{publish_branch}' &&
       (
         github.event_name == 'push' ||
         github.event_name == 'workflow_dispatch'
@@ -87,17 +87,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Install Rojo
-        run: |
-          cargo install rojo --version {rojo_version} --locked
-
-      - name: Build release
-        run: |
-          mkdir -p build
-          rojo build default.project.json -o {build_path}
-          test -s {build_path}
+      - name: Download built Roblox place
+        uses: actions/download-artifact@v4
+        with:
+          name: roblox-place
+          path: build
 
       - name: Publish to Roblox
         env:
@@ -117,7 +113,7 @@ jobs:
             "https://apis.roblox.com/universes/v1/$UNIVERSE_ID/places/$PLACE_ID/versions?versionType=Published" \\
             --header "x-api-key: $API_KEY" \\
             --header "Content-Type: application/xml" \\
-            --data-binary @{build_path})"
+            --data-binary "@{build_path}"
 
           if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
             echo "Publication failed: HTTP $status"
@@ -136,7 +132,6 @@ def main():
     required = {
         "workflow_name",
         "branch",
-        "rojo_version",
         "build_path",
         "env",
     }
@@ -150,7 +145,7 @@ def main():
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(workflow, encoding="utf-8")
 
-    print("Workflow generated: {OUTPUT_FILE}")
+    print(f"Workflow generated: {OUTPUT_FILE}")
 
 if __name__ == "__main__":
     main()
