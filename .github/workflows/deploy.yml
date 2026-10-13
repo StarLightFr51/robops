@@ -39,6 +39,11 @@ jobs:
       - name: Install tools from rokit.toml
         run: rokit install
 
+      - name: Trust and install Rojo
+        run: |
+          rokit add rojo-rbx/rojo
+          rokit install
+
       - name: Verify Rojo
         run: rojo -v
 
