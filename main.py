@@ -51,7 +51,7 @@ jobs:
       - name: Install Rokit
         uses: paradoxum-games/setup-rokit@v3
         with:
-          path: .rokit-bootstrap
+          path: .
           cache: true
 
       - name: Install Rojo
