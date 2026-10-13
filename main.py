@@ -38,15 +38,23 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - name: Install Rojo
-        run: pip install rojo=={rojo_version}
+      - name: Setup Rokit
+        uses: paradoxum-games/setup-rokit@v3
+        with:
+          cache: true
+
+      - name: Install tools from rokit.toml
+        run: rokit install
+
+      - name: Verify Rojo
+        run: rojo -v
 
       - name: Build Roblox place
         run: |
@@ -67,7 +75,7 @@ jobs:
     environment: {environment}
 
     if: >-
-      github.ref == 'refs/heads/' + {branch} &&
+      github.ref == 'refs/heads/main' &&
       (
         github.event_name == 'push' ||
         github.event_name == 'workflow_dispatch'
