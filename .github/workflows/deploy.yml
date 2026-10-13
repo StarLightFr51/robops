@@ -31,21 +31,20 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Setup Rokit
+      - name: Prepare Rokit
+        run: mkdir -p .rokit-bootstrap
+
+      - name: Install Rokit
         uses: paradoxum-games/setup-rokit@v3
         with:
+          path: .rokit-bootstrap
           cache: true
 
-      - name: Install tools from rokit.toml
-        run: rokit install
-
-      - name: Trust and install Rojo
-        run: |
-          rokit add rojo-rbx/rojo
-          rokit install
+      - name: Install Rojo
+        run: rokit install --no-trust-check
 
       - name: Verify Rojo
-        run: rojo -v
+        run: rojo --version
 
       - name: Build Roblox place
         run: |
