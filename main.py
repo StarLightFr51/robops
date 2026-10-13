@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-
 CONFIG_FILE = ROOT / "config.json"
 OUTPUT_FILE = ROOT / ".github" / "workflows" / "deploy.yml"
 
