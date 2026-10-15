@@ -1,0 +1,83 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Publication d'une nouvelle version de robops (.exe Windows)
+#
+#  1. Augmente __version__ dans src/robops/__init__.py (ex. "1.2.0") et commit.
+#  2. Pousse le tag correspondant :   git tag v1.2.0 && git push origin v1.2.0
+#
+#  Ce workflow teste, compile robops.exe + robops-setup.exe sur Windows, puis
+#  crée la release GitHub. Les installations existantes se mettent à jour
+#  toutes seules dans les 24 h (ou tout de suite avec `robops self-update`).
+# ─────────────────────────────────────────────────────────────────────────────
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write          # nécessaire pour créer la release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ".[dev]"
+      - run: python -m pytest -q
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Vérifier que le tag correspond à la version du code
+        run: |
+          version=$(python -c "import re,pathlib;print(re.search(r'__version__ = \"(.+?)\"', pathlib.Path('src/robops/__init__.py').read_text()).group(1))")
+          echo "version du code : $version / tag : $GITHUB_REF_NAME"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Le tag $GITHUB_REF_NAME ne correspond pas à __version__ = \"$version\" (attendu : v$version)."
+            exit 1
+          fi
+
+      - name: Installer les dépendances
+        run: python -m pip install --disable-pip-version-check . "pyinstaller==6.*"
+
+      - name: Compiler les exécutables
+        run: python exe/build.py --repo "$GITHUB_REPOSITORY"
+
+      - name: Tester les exécutables
+        env:
+          ROBOPS_NO_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          ./dist/robops.exe --version | tee version.txt
+          grep -q "${GITHUB_REF_NAME#v}" version.txt
+          mkdir smoke && cd smoke
+          ../dist/robops.exe init
+          test -f robops.toml && test -f .github/workflows/roblox-deploy.yml
+          ../dist/robops.exe check || true        # le modèle exige des IDs : on vérifie juste que ça tourne
+          ../dist/robops-setup.exe --help
+          cd .. && cat dist/SHA256SUMS.txt
+
+      - name: Publier la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/robops.exe dist/robops-setup.exe dist/SHA256SUMS.txt \
+            --title "robops $GITHUB_REF_NAME" \
+            --generate-notes

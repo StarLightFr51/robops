@@ -1,0 +1,68 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  robops — configuration du déploiement Roblox (Open Cloud)
+#
+#  Où trouver les IDs : Creator Dashboard → ton expérience
+#    • universe_id : menu « ⋯ » sur la vignette → « Copy Universe ID »
+#    • place_id    : onglet Places → clic sur la place → ID dans l'URL
+#
+#  Toute valeur texte peut lire une variable d'environnement :
+#    universe_id = "${ROBLOX_UNIVERSE_ID}"          (obligatoire)
+#    universe_id = "${ROBLOX_UNIVERSE_ID:-123456}"  (avec valeur par défaut)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Variable d'environnement qui contient la clé API (secret GitHub du même nom).
+api_key_env = "ROBLOX_API_KEY"
+
+[players]
+# Où sont rangés les profils joueurs (commandes `robops player …`).
+# Valeurs par défaut de DataService (leifstout) / ProfileStore. Si tu passes
+# profileStoreIndex ou profileStoreDataPrefix à DataService:init, recopie-les ici.
+datastore = "Default"           # = profileStoreIndex
+key_prefix = "PLAYER_"          # = profileStoreDataPrefix (clé = PLAYER_<UserId>)
+
+[build]
+# Lancée avant chaque déploiement. Supprime cette section si tu commites
+# directement ton fichier .rbxl / .rbxlx dans le dépôt.
+command = "rojo build default.project.json --output build/game.rbxl"
+
+
+# ═══════════════════════════════ STAGING ═════════════════════════════════════
+[environments.staging]
+universe_id = 0                 # ← à remplacer
+version_type = "Published"      # "Saved" = sauvegardé sans être joué par les joueurs
+restart_servers = true          # bascule immédiatement les serveurs sur la nouvelle version
+
+[[environments.staging.places]]
+name = "main"
+place_id = 0                    # ← à remplacer
+file = "build/game.rbxl"
+# Métadonnées optionnelles (mises à jour après la publication) :
+display_name = "Mon jeu [STAGING]"
+# description = "Version de test"
+# server_size = 10
+
+# Plusieurs places ? Ajoute un bloc par place :
+# [[environments.staging.places]]
+# name = "lobby"
+# place_id = 0
+# file = "build/lobby.rbxl"
+
+
+# ══════════════════════════════ PRODUCTION ═══════════════════════════════════
+[environments.production]
+universe_id = 0                 # ← à remplacer
+version_type = "Published"
+restart_servers = false         # les serveurs existants finissent leur partie
+
+[[environments.production.places]]
+name = "main"
+place_id = 0                    # ← à remplacer
+file = "build/game.rbxl"
+
+# Données écrasées UNIQUEMENT avec `robops deploy production --with-datastores`.
+# Le fichier JSON est un objet { "clé": valeur, ... } ; chaque clé est écrasée.
+# Un snapshot des DataStores est pris avant (sauvegarde versionnée 30 jours).
+# [[environments.production.datastores]]
+# name = "GameConfig"
+# scope = "global"              # optionnel
+# file = "data/config.production.json"

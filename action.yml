@@ -1,0 +1,89 @@
+name: robops — déploiement Roblox
+description: Build et publie une expérience Roblox (places, métadonnées, DataStores) via Open Cloud.
+author: robops
+
+inputs:
+  environment:
+    description: Environnement de robops.toml à déployer (ex. staging, production)
+    required: true
+  api-key:
+    description: Clé API Open Cloud (passer un secret). Inutile en dry-run.
+    required: false
+    default: ""
+  config:
+    description: Chemin du fichier de configuration
+    required: false
+    default: robops.toml
+  version-type:
+    description: "Surcharge du type de version : Published ou Saved (vide = config)"
+    required: false
+    default: ""
+  places:
+    description: Noms des places à déployer, séparés par des espaces (vide = toutes)
+    required: false
+    default: ""
+  with-datastores:
+    description: Écrase aussi les DataStores configurés (true/false)
+    required: false
+    default: "false"
+  restart:
+    description: "Redémarrage des serveurs : true, false ou vide (= config)"
+    required: false
+    default: ""
+  skip-build:
+    description: Ne pas lancer la commande de build (true/false)
+    required: false
+    default: "false"
+  dry-run:
+    description: Build + vérifications sans appel à Roblox (true/false)
+    required: false
+    default: "false"
+  python-version:
+    description: Version de Python utilisée (3.11 minimum)
+    required: false
+    default: "3.12"
+
+outputs:
+  versions:
+    description: 'Versions publiées au format JSON, ex. {"main": 42}'
+    value: ${{ steps.deploy.outputs.versions }}
+  environment:
+    description: Environnement déployé
+    value: ${{ steps.deploy.outputs.environment }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Installer robops
+      shell: bash
+      run: python -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH"
+
+    - name: Déployer
+      id: deploy
+      shell: bash
+      # Les entrées passent par des variables d'environnement (pas d'injection dans le script).
+      env:
+        ROBLOX_API_KEY: ${{ inputs.api-key }}
+        IN_ENVIRONMENT: ${{ inputs.environment }}
+        IN_CONFIG: ${{ inputs.config }}
+        IN_VERSION_TYPE: ${{ inputs.version-type }}
+        IN_PLACES: ${{ inputs.places }}
+        IN_WITH_DATASTORES: ${{ inputs.with-datastores }}
+        IN_RESTART: ${{ inputs.restart }}
+        IN_SKIP_BUILD: ${{ inputs.skip-build }}
+        IN_DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+        args=(deploy "$IN_ENVIRONMENT" --config "$IN_CONFIG")
+        [ -n "$IN_VERSION_TYPE" ] && args+=(--version-type "$IN_VERSION_TYPE")
+        for place in $IN_PLACES; do args+=(--place "$place"); done
+        [ "$IN_WITH_DATASTORES" = "true" ] && args+=(--with-datastores)
+        [ "$IN_RESTART" = "true" ] && args+=(--restart)
+        [ "$IN_RESTART" = "false" ] && args+=(--no-restart)
+        [ "$IN_SKIP_BUILD" = "true" ] && args+=(--skip-build)
+        [ "$IN_DRY_RUN" = "true" ] && args+=(--dry-run)
+        robops "${args[@]}"
