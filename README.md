@@ -45,7 +45,7 @@ robops/
 │   ├── installer.py            # installateur Windows (robops-setup.exe)
 │   ├── winsetup.py             # PATH utilisateur et « Applications et fonctionnalités »
 │   └── templates/              # fichiers générés par `robops init`
-├── tests/                      # 83 tests (API Roblox, GitHub et registre Windows simulés)
+├── tests/                      # 88 tests (API Roblox, GitHub et registre Windows simulés)
 └── .github/workflows/
     ├── ci.yml                  # tests de l'outil lui-même
     └── release.yml             # compile les .exe et publie une release à chaque tag v*
