@@ -127,3 +127,13 @@ def test_list_entry_ids_paginates(make_client):
     assert list(client.list_entry_ids(5, "DS", prefix="p")) == ["a", "b", "c"]
     assert session.calls[0]["params"]["filter"] == 'id.startsWith("p")'
     assert session.calls[1]["params"]["pageToken"] == "t2"
+
+
+def test_list_datastores_paginates(make_client):
+    client, session, _ = make_client([
+        FakeResponse(200, {"dataStores": [{"id": "Default"}, {"id": "____PS"}], "nextPageToken": "n"}),
+        FakeResponse(200, {"dataStores": [{"path": "universes/1/data-stores/Config"}]}),
+    ])
+    assert list(client.list_datastores(1)) == ["Default", "____PS", "Config"]
+    assert session.calls[0]["url"].endswith("/cloud/v2/universes/1/data-stores")
+    assert session.calls[1]["params"]["pageToken"] == "n"

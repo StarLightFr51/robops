@@ -29,12 +29,22 @@ class UsageError(Exception):
 
 def _api_key(env_var: str) -> str:
     key = os.environ.get(env_var, "").strip()
-    if not key:
+    if key:
+        return key
+    if out.in_github_actions():
+        repo = os.environ.get("GITHUB_REPOSITORY", "ce dépôt")
         raise UsageError(
-            f"La variable d'environnement {env_var} est vide. Exporte ta clé Open Cloud "
-            f"(en CI : secret GitHub injecté via `env: {env_var}: ${{{{ secrets.{env_var} }}}}`)."
+            f"Le secret {env_var} est vide pour ce run. Il doit se trouver dans le dépôt {repo} "
+            "(celui qui lance le workflow, pas le dépôt robops) : Settings → Secrets and variables → "
+            f"Actions → onglet « Secrets » → « Repository secrets », nommé exactement {env_var}. "
+            "Un secret placé dans un autre dépôt, dans l'onglet « Variables », dans Dependabot/Codespaces "
+            "ou dans un Environment GitHub n'est pas visible ici."
         )
-    return key
+    raise UsageError(
+        f"{env_var} n'est pas définie sur cette machine. Les secrets GitHub n'existent que pendant les "
+        "exécutions sur GitHub : pour publier, utilise le bouton « Run workflow » de l'onglet Actions. "
+        f"Pour lancer robops en local, dans PowerShell :  $env:{env_var} = \"ta-clé\""
+    )
 
 
 def _client(env_var: str) -> OpenCloudClient:
@@ -238,6 +248,15 @@ def cmd_ds_import(args) -> int:
     return EXIT_OK
 
 
+def cmd_ds_stores(args) -> int:
+    universe_id, _, key_env = _resolve_target(args, need_place=False)
+    names = list(_client(key_env).list_datastores(universe_id, prefix=args.prefix))
+    for name in names:
+        print(name)
+    _status(f"{len(names)} DataStore(s) dans l'univers {universe_id}.")
+    return EXIT_OK
+
+
 def cmd_ds_snapshot(args) -> int:
     universe_id, _, key_env = _resolve_target(args, need_place=False)
     _print_json(_client(key_env).snapshot_datastores(universe_id))
@@ -326,6 +345,24 @@ def cmd_player_backup(args) -> int:
     out.set_output("backup_file", str(result.path))
     out.set_output("backup_count", str(result.count))
     out.success(f"{result.count} profil(s) sauvegardé(s) dans {result.path}")
+    if result.count == 0 and not result.errors and result.other_keys:
+        guess = pl.guess_prefix(result.other_examples or [])
+        out.warn(
+            f"Le DataStore « {cfg.datastore} » contient {result.other_keys} clé(s), mais aucune ne commence par "
+            f"« {cfg.key_prefix} ». Exemples : {', '.join(result.other_examples or [])}"
+        )
+        if guess is not None:
+            out.info(f"  → Dans robops.toml, section [players], mets :  key_prefix = \"{guess}\"   puis relance le backup.")
+    elif result.count == 0 and not result.errors:
+        out.warn(
+            f"Aucun profil trouvé : le DataStore « {cfg.datastore} » est vide ou n'existe pas (univers {universe_id}). "
+            "Causes possibles :\n"
+            "  1. Mauvais univers : vérifie universe_id dans robops.toml (celui du jeu où jouent les joueurs).\n"
+            "  2. Autre nom de DataStore : regarde profileStoreIndex dans ton DataService:init, puis la section "
+            "[players] de robops.toml (Creator Dashboard → ton jeu → Configurations → Data stores manager).\n"
+            "  3. Aucune donnée encore sauvegardée : tests uniquement dans Studio sans « Enable Studio Access "
+            "to API Services », ou useMock activé dans DataService."
+        )
     if result.errors:
         for user_id, error in list(result.errors.items())[:20]:
             out.warn(f"{user_id} : {error}")
@@ -511,12 +548,18 @@ def cmd_check(args) -> int:
                 state = "présent" if place.file.is_file() else "absent (sera produit par le build ?)"
                 out.info(f"  • {place.name} → {place.place_id} : {place.file.name} {state}")
             for seed in env.datastores:
-                state = "présent" if seed.file.is_file() else "ABSENT"
-                if not seed.file.is_file():
+                if seed.file.is_file():
+                    out.info(f"  • DataStore {seed.name} ← {seed.file.name} présent")
+                else:
                     problems += 1
-                out.info(f"  • DataStore {seed.name} ← {seed.file.name} {state}")
+                    out.error(f"  • DataStore {seed.name} : fichier introuvable ({seed.file}). Crée-le, "
+                              f"ou commente la section [[environments.{name}.datastores]] si tu ne t'en sers pas.")
             if not os.environ.get(env.api_key_env):
-                out.warn(f"{env.api_key_env} n'est pas défini dans cet environnement.")
+                out.warn(
+                    f"{env.api_key_env} n'est pas définie sur cette machine. C'est normal si tu publies via "
+                    "GitHub Actions : un secret GitHub n'existe que pendant les exécutions sur GitHub. "
+                    f"Pour tester en local, dans PowerShell :  $env:{env.api_key_env} = \"ta-clé\""
+                )
                 if args.online:
                     problems += 1
                     continue
@@ -536,19 +579,39 @@ def cmd_check(args) -> int:
     return EXIT_OK
 
 
+def _point_to_action_repo(workflow: str, action_repo: str) -> str:
+    """Remplace « uses: ./tools/robops[/sous-action] » par le dépôt GitHub de robops.
+
+    ex. ./tools/robops/backup → alex/robops/backup@main
+    """
+    import re
+
+    repo, _, ref = action_repo.partition("@")
+    ref = ref or "main"
+    pattern = re.compile(r"uses: \./tools/robops(/[\w.-]+)?[^\S\n]*(#[^\n]*)?")
+    return pattern.sub(lambda m: f"uses: {repo}{m.group(1) or ''}@{ref}", workflow)
+
+
 def cmd_init(args) -> int:
     targets = {
         "robops.toml": Path(args.config),
         "github-workflow.yml": Path(".github/workflows/roblox-deploy.yml"),
+        "backup-workflow.yml": Path(".github/workflows/roblox-backup.yml"),
         "rokit.toml": Path("rokit.toml"),
     }
     templates = resources.files("robops") / "templates"
+    # D'où le workflow charge l'action robops : le dépôt GitHub de robops s'il est connu,
+    # sinon une copie locale dans tools/robops.
+    action_repo = (args.action_repo or updater.repository() or "").strip()
     for template, dest in targets.items():
         if dest.exists() and not args.force:
             out.warn(f"{dest} existe déjà (utilise --force pour l'écraser).")
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text((templates / template).read_text(encoding="utf-8"), encoding="utf-8")
+        content = (templates / template).read_text(encoding="utf-8")
+        if template.endswith(".yml") and action_repo:
+            content = _point_to_action_repo(content, action_repo)
+        dest.write_text(content, encoding="utf-8")
         out.success(f"{dest} créé")
 
     # Les copies de sécurité et les backups contiennent des données personnelles de joueurs :
@@ -685,6 +748,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_ds_import)
 
+    p = ds.add_parser("stores", parents=[common], help="liste les DataStores de l'expérience")
+    _add_target(p, place=False)
+    p.add_argument("--prefix", help="seulement les noms commençant par ce préfixe")
+    p.set_defaults(func=cmd_ds_stores)
+
     p = ds.add_parser("snapshot", parents=[common], help="prend un snapshot des DataStores (1 par jour UTC)")
     _add_target(p, place=False)
     p.set_defaults(func=cmd_ds_snapshot)
@@ -759,6 +827,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("init", parents=[common], help="crée robops.toml et le workflow GitHub Actions")
     p.add_argument("--force", action="store_true", help="écrase les fichiers existants")
+    p.add_argument("--action-repo", metavar="COMPTE/robops",
+                   help="dépôt GitHub de robops utilisé par le workflow (défaut : copie locale tools/robops)")
     p.set_defaults(func=cmd_init)
 
     return parser

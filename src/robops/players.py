@@ -303,6 +303,18 @@ class BackupResult:
     path: Path
     count: int
     errors: dict[str, str]
+    other_keys: int = 0                 # clés du DataStore qui ne commencent pas par le préfixe
+    other_examples: list[str] | None = None
+
+
+def guess_prefix(keys: Iterable[str]) -> str | None:
+    """Devine le préfixe de clés du type <préfixe><UserId> (ex. 'Player_123' → 'Player_')."""
+    counts: dict[str, int] = {}
+    for key in keys:
+        stripped = key.rstrip("0123456789")
+        if stripped != key:                      # la clé se termine bien par un nombre
+            counts[stripped] = counts.get(stripped, 0) + 1
+    return max(counts, key=counts.get) if counts else None
 
 
 def backup_players(
@@ -342,7 +354,26 @@ def backup_players(
         "key_prefix": cfg.key_prefix,
         "scope": cfg.scope,
     }
-    keys = client.list_entry_ids(universe_id, cfg.datastore, scope=cfg.scope, prefix=cfg.key_prefix, limit=limit)
+    # Filtrage du préfixe côté robops (et non par l'API) : on peut ainsi signaler
+    # les clés qui ne correspondent pas, pour aider à corriger la configuration.
+    others: list[str] = []
+    other_count = 0
+
+    def matching_keys() -> Iterator[str]:
+        nonlocal other_count
+        taken = 0
+        for key in client.list_entry_ids(universe_id, cfg.datastore, scope=cfg.scope):
+            if not key.startswith(cfg.key_prefix):
+                other_count += 1
+                if len(others) < 5:
+                    others.append(key)
+                continue
+            yield key
+            taken += 1
+            if limit is not None and taken >= limit:
+                return
+
+    keys = matching_keys()
     with ThreadPoolExecutor(max_workers=max(1, min(workers, 16))) as pool, _open_text(tmp_path, "w") as fh:
         fh.write(json.dumps(header, ensure_ascii=False)[:-1] + ', "profiles": {')
         first = True
@@ -359,7 +390,7 @@ def backup_players(
                 progress(count)
         fh.write("\n}, " + f'"count": {count}, "errors": ' + json.dumps(errors, ensure_ascii=False) + "}\n")
     os.replace(tmp_path, out_path)
-    return BackupResult(out_path, count, errors)
+    return BackupResult(out_path, count, errors, other_count, others)
 
 
 def load_backup(path: Path, cfg: PlayersConfig) -> dict[str, dict]:

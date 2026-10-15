@@ -363,6 +363,23 @@ class OpenCloudClient:
                 return
             params = {**params, "pageToken": token}
 
+    def list_datastores(self, universe_id: int, *, prefix: str | None = None) -> Iterator[str]:
+        """Noms des DataStores de l'expérience."""
+        params: dict[str, Any] = {"maxPageSize": 100}
+        if prefix:
+            params["filter"] = f'id.startsWith("{prefix}")'
+        while True:
+            payload = self._request(
+                "GET", f"/cloud/v2/universes/{universe_id}/data-stores",
+                scope="universe-datastores.control:list", params=params,
+            ).json()
+            for store in payload.get("dataStores", []):
+                yield store.get("id") or store.get("path", "").rsplit("/", 1)[-1]
+            token = payload.get("nextPageToken")
+            if not token:
+                return
+            params = {**params, "pageToken": token}
+
     def snapshot_datastores(self, universe_id: int) -> dict:
         """Snapshot : garantit une sauvegarde versionnée de toutes les données (30 jours).
 

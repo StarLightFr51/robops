@@ -94,8 +94,7 @@ class FakeDataStore:
         assert base in url, url
         tail = url.split(base, 1)[1]
         if method == "GET" and tail == "":
-            return FakeResponse(200, {"dataStoreEntries": [{"id": k} for k in sorted(self.entries)
-                                                           if k.startswith("PLAYER_")]})
+            return FakeResponse(200, {"dataStoreEntries": [{"id": k} for k in sorted(self.entries)]})
         key = unquote(tail.lstrip("/"))
         if method == "GET":
             if key not in self.entries:
@@ -259,3 +258,35 @@ def test_safety_copies_never_overwrite_each_other(tmp_path):
     assert first != second
     assert json.loads(first.read_text())["value"]["Data"] == {"coins": 1}
     assert json.loads(second.read_text())["value"]["Data"] == {"coins": 2}
+
+
+def test_empty_backup_explains_why(store, capsys):
+    store.entries.clear()
+    assert run("backup", "--out", "b.json") == 0
+    err = capsys.readouterr().err
+    assert "Aucun profil trouvé" in err and "Data stores manager" in err
+
+
+@pytest.mark.parametrize("keys, expected", [
+    (["123456", "789012"], 'key_prefix = ""'),
+    (["Player_1", "Player_22", "Config"], 'key_prefix = "Player_"'),
+])
+def test_backup_suggests_prefix_when_keys_dont_match(store, capsys, keys, expected):
+    store.entries = {k: {"value": profile({}), "etag": "e", "users": []} for k in keys}
+    assert run("backup", "--out", "b.json") == 0
+    captured = capsys.readouterr()
+    assert "aucune ne commence par « PLAYER_ »" in captured.err
+    assert expected in captured.out
+
+
+def test_backup_ignores_other_keys_in_same_store(store, tmp_path):
+    store.entries["Config"] = {"value": {"motd": "hi"}, "etag": "e", "users": []}
+    assert run("backup", "--out", "b.json") == 0
+    data = json.loads((tmp_path / "b.json").read_text())
+    assert data["count"] == 3 and "Config" not in data["profiles"]
+
+
+def test_guess_prefix():
+    assert pl.guess_prefix(["PLAYER_1", "PLAYER_2", "x"]) == "PLAYER_"
+    assert pl.guess_prefix(["42"]) == ""
+    assert pl.guess_prefix(["Config", "Settings"]) is None
