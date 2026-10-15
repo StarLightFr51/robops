@@ -44,7 +44,7 @@ robops/
 │   ├── installer.py            # installateur Windows (robops-setup.exe)
 │   ├── winsetup.py             # PATH utilisateur et « Applications et fonctionnalités »
 │   └── templates/              # fichiers générés par `robops init`
-├── tests/                      # 72 tests (API Roblox, GitHub et registre Windows simulés)
+├── tests/                      # 73 tests (API Roblox, GitHub et registre Windows simulés)
 └── .github/workflows/
     ├── ci.yml                  # tests de l'outil lui-même
     └── release.yml             # compile les .exe et publie une release à chaque tag v*
@@ -56,15 +56,25 @@ Sur ton PC, tu peux utiliser `robops.exe` sans installer Python. Les exécutable
 
 ### Mise en place (une seule fois)
 
-1. Pousse ce dossier `robops/` dans **son propre dépôt GitHub** (par exemple `ton-compte/robops`). Un dépôt public est le plus simple ; pour un dépôt privé, voir plus bas.
-2. Publie la première version :
+1. Crée sur GitHub un dépôt nommé `robops` (privé ou public) et envoie-y le contenu de ce dossier, à la racine :
 
    ```bash
-   git tag v1.1.0          # doit correspondre à __version__ dans src/robops/__init__.py
-   git push origin v1.1.0
+   cd robops
+   git init
+   git add .
+   git commit -m "robops 1.2.0"
+   git branch -M main
+   git remote add origin https://github.com/TON-COMPTE/robops.git
+   git push -u origin main
    ```
 
-   Le workflow `release.yml` lance les tests, compile `robops.exe` et `robops-setup.exe`, les teste, calcule leurs empreintes SHA-256 et crée la release. Le nom du dépôt est gravé dans les exécutables au moment de la compilation : rien à configurer.
+2. Lance la compilation : onglet **Actions** du dépôt `robops` → **Release** (colonne de gauche) → **Run workflow** → branche `main` → **Run workflow**.
+
+   En 5 minutes environ, le workflow lance les tests, compile `robops.exe` et `robops-setup.exe` sur une machine Windows, les teste, calcule leurs empreintes SHA-256 et crée la release `v1.2.0`. Le nom du dépôt est gravé dans les exécutables : rien à configurer.
+
+3. Les fichiers apparaissent dans la section **Releases**, à droite de la page d'accueil du dépôt.
+
+Si tu préfères git, pousser le tag `v1.2.0` (`git tag v1.2.0 && git push origin v1.2.0`) déclenche la même chose.
 
 ### Installer sur un PC
 
@@ -89,7 +99,7 @@ Ouvre ensuite un **nouveau** terminal et tape `robops --version`. Relancer l'ins
 
 ### Publier une nouvelle version
 
-Augmente `__version__` dans `src/robops/__init__.py`, commit, puis pousse le tag `v<version>`. Si le tag ne correspond pas à la version du code, la release est refusée. Les PC équipés se mettent à jour d'eux-mêmes dans les 24 h.
+Augmente `__version__` dans `src/robops/__init__.py` (par exemple `1.2.1`), commit et push, puis relance **Actions → Release → Run workflow**. Si cette version est déjà publiée, le workflow s'arrête et te demande d'augmenter le numéro. Les PC équipés se mettent à jour d'eux-mêmes dans les 24 h.
 
 ### Dépôt privé
 
@@ -99,16 +109,17 @@ Les appels à GitHub nécessitent alors un token. Crée un *fine-grained token* 
 
 *Paramètres → Applications → robops → Désinstaller*, ou `robops-setup.exe --uninstall`. Le dossier, l'entrée du PATH et l'entrée du registre sont retirés.
 
-### Compiler à la main (facultatif)
+### Compiler et installer sur ton PC, sans GitHub
 
-Sur un PC Windows avec Python 3.11+ :
+Sur un PC Windows avec Python 3.11+ (installé depuis python.org, case *Add python.exe to PATH* cochée), ouvre un terminal dans le dossier `robops` et lance :
 
-```bash
-pip install . "pyinstaller==6.*"
-python exe/build.py --repo ton-compte/robops
+```powershell
+python exe\build.py --install
 ```
 
-Résultat dans `dist/`. PyInstaller ne sait pas produire un .exe Windows depuis Linux ou macOS.
+Le script installe PyInstaller s'il manque, compile `robops.exe` (1 à 2 minutes), le copie dans `%LOCALAPPDATA%\Programs\robops` et ajoute ce dossier à ton PATH. Ouvre ensuite un **nouveau** terminal : `robops --version`.
+
+Pour mettre à jour, relance la même commande après avoir récupéré le nouveau code. L'exécutable se met aussi à jour tout seul depuis les releases GitHub de `StarLightFr51/robops` (change de dépôt avec `--repo owner/nom`). Sans `--install`, les fichiers sont simplement produits dans `dist/`. PyInstaller ne sait pas produire un .exe Windows depuis Linux ou macOS.
 
 ## Installation dans ton projet Roblox
 
@@ -128,7 +139,7 @@ Résultat dans `dist/`. PyInstaller ne sait pas produire un .exe Windows depuis 
    ROBLOX_API_KEY=... robops check staging --online   # + clé et IDs auprès de Roblox
    ```
 
-> Tu préfères un dépôt séparé pour l'outil ? Pousse `robops/` sur GitHub et remplace `uses: ./tools/robops` par `uses: ton-compte/robops@v1` dans le workflow.
+> Tu préfères un dépôt séparé pour l'outil ? Pousse `robops/` sur GitHub et remplace `uses: ./tools/robops` par `uses: StarLightFr51/robops@v1` dans le workflow.
 
 ## Créer la clé API Open Cloud
 

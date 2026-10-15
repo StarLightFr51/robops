@@ -91,6 +91,26 @@ def install(install_dir: Path, *, force: bool = False, session: requests.Session
     return 0
 
 
+def install_local(exe: Path, install_dir: Path, *, setup_exe: Path | None = None,
+                  version: str = "", reg: Any = None) -> bool:
+    """Installe un robops.exe compilé sur ce PC (exe/build.py --install).
+
+    Retourne True si le dossier vient d'être ajouté au PATH.
+    """
+    if not exe.is_file():
+        raise OSError(f"Exécutable introuvable : {exe}")
+    install_dir.mkdir(parents=True, exist_ok=True)
+    target = install_dir / updater.EXE_NAME
+    staged = install_dir / ".robops-new.exe"
+    shutil.copy2(exe, staged)
+    updater.replace_executable(staged, target)      # fonctionne même si robops tourne déjà
+    updater.cleanup_old(target)
+    if setup_exe is not None and setup_exe.is_file():
+        shutil.copy2(setup_exe, install_dir / updater.SETUP_NAME)
+        winsetup.register_uninstall(install_dir, version, install_dir / updater.SETUP_NAME, reg)
+    return winsetup.add_to_user_path(install_dir, reg)
+
+
 def uninstall(install_dir: Path, *, reg: Any = None) -> int:
     _say(f"Désinstallation de robops ({install_dir}) …")
     if winsetup.remove_from_user_path(install_dir, reg):

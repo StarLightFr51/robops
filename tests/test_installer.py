@@ -131,3 +131,24 @@ def test_install_reports_missing_release(setup_env, monkeypatch):
     with pytest.raises(updater.UpdateError):
         installer.install(setup_env, session=FakeGitHub(latest_status=404), reg=FakeWinreg(""))
     assert not (setup_env / "robops.exe").exists()
+
+
+def test_install_local_build(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "robops.exe").write_bytes(b"MZ-local")
+    (dist / "robops-setup.exe").write_bytes(b"MZ-setup")
+    install_dir = tmp_path / "Programs" / "robops"
+    reg = FakeWinreg(r"C:\Tools")
+
+    assert installer.install_local(dist / "robops.exe", install_dir, setup_exe=dist / "robops-setup.exe",
+                                   version="1.1.0", reg=reg) is True
+    assert (install_dir / "robops.exe").read_bytes() == b"MZ-local"
+    assert reg.path()[0] == rf"C:\Tools;{install_dir}"
+    assert reg.keys[(HKCU, winsetup.UNINSTALL_KEY)]["DisplayVersion"][0] == "1.1.0"
+
+    # Recompiler puis réinstaller : remplace l'exe, pas de doublon dans le PATH
+    (dist / "robops.exe").write_bytes(b"MZ-local-v2")
+    assert installer.install_local(dist / "robops.exe", install_dir, reg=reg) is False
+    assert (install_dir / "robops.exe").read_bytes() == b"MZ-local-v2"
+    assert sorted(p.name for p in install_dir.iterdir()) == ["robops-setup.exe", "robops.exe"]
