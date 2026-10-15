@@ -116,3 +116,33 @@ def test_check_and_init(tmp_path, monkeypatch):
     assert (tmp_path / ".gitignore").read_text().count(".robops/") == 1
     # le modèle exige de renseigner les IDs
     assert cli.main(["check"]) == 1
+
+
+def test_init_action_repo(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["init", "--action-repo", "alex/robops"]) == 0
+    workflow = (tmp_path / ".github/workflows/roblox-deploy.yml").read_text()
+    assert "uses: ./tools/robops" not in workflow
+    assert workflow.count("uses: alex/robops@main") == 2
+    backup = (tmp_path / ".github/workflows/roblox-backup.yml").read_text()
+    assert "uses: alex/robops/backup@main\n" in backup
+    assert "uses: ./tools/robops" not in backup
+
+
+def test_point_to_action_repo_keeps_ref():
+    text = "      - uses: ./tools/robops                  # chemin\n      - uses: ./tools/robops/backup\n"
+    result = cli._point_to_action_repo(text, "alex/robops@v1.2.0")
+    assert result == "      - uses: alex/robops@v1.2.0\n      - uses: alex/robops/backup@v1.2.0\n"
+
+
+def test_missing_key_message_in_github_actions(repo, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "alex/Incremental-Game")
+    assert cli.main(["deploy", "staging"]) == 2
+    out = capsys.readouterr().out
+    assert "alex/Incremental-Game" in out and "Repository secrets" in out
+
+
+def test_missing_key_message_locally(repo, capsys):
+    assert cli.main(["deploy", "staging"]) == 2
+    assert "Run workflow" in capsys.readouterr().err

@@ -30,7 +30,8 @@ Autres points :
 
 ```
 robops/
-├── action.yml                  # action GitHub composite (uses: ./tools/robops)
+├── action.yml                  # action GitHub de déploiement (uses: TON-COMPTE/robops@main)
+├── backup/action.yml           # action GitHub de backup des joueurs (uses: TON-COMPTE/robops/backup@main)
 ├── exe/                        # compilation de robops.exe et robops-setup.exe (PyInstaller)
 ├── pyproject.toml
 ├── src/robops/
@@ -44,7 +45,7 @@ robops/
 │   ├── installer.py            # installateur Windows (robops-setup.exe)
 │   ├── winsetup.py             # PATH utilisateur et « Applications et fonctionnalités »
 │   └── templates/              # fichiers générés par `robops init`
-├── tests/                      # 73 tests (API Roblox, GitHub et registre Windows simulés)
+├── tests/                      # 83 tests (API Roblox, GitHub et registre Windows simulés)
 └── .github/workflows/
     ├── ci.yml                  # tests de l'outil lui-même
     └── release.yml             # compile les .exe et publie une release à chaque tag v*
@@ -62,7 +63,7 @@ Sur ton PC, tu peux utiliser `robops.exe` sans installer Python. Les exécutable
    cd robops
    git init
    git add .
-   git commit -m "robops 1.2.0"
+   git commit -m "robops 1.1.0"
    git branch -M main
    git remote add origin https://github.com/TON-COMPTE/robops.git
    git push -u origin main
@@ -70,11 +71,11 @@ Sur ton PC, tu peux utiliser `robops.exe` sans installer Python. Les exécutable
 
 2. Lance la compilation : onglet **Actions** du dépôt `robops` → **Release** (colonne de gauche) → **Run workflow** → branche `main` → **Run workflow**.
 
-   En 5 minutes environ, le workflow lance les tests, compile `robops.exe` et `robops-setup.exe` sur une machine Windows, les teste, calcule leurs empreintes SHA-256 et crée la release `v1.2.0`. Le nom du dépôt est gravé dans les exécutables : rien à configurer.
+   En 5 minutes environ, le workflow lance les tests, compile `robops.exe` et `robops-setup.exe` sur une machine Windows, les teste, calcule leurs empreintes SHA-256 et crée la release `v1.1.0`. Le nom du dépôt est gravé dans les exécutables : rien à configurer.
 
 3. Les fichiers apparaissent dans la section **Releases**, à droite de la page d'accueil du dépôt.
 
-Si tu préfères git, pousser le tag `v1.2.0` (`git tag v1.2.0 && git push origin v1.2.0`) déclenche la même chose.
+Si tu préfères git, pousser le tag `v1.1.0` (`git tag v1.1.0 && git push origin v1.1.0`) déclenche la même chose.
 
 ### Installer sur un PC
 
@@ -99,7 +100,7 @@ Ouvre ensuite un **nouveau** terminal et tape `robops --version`. Relancer l'ins
 
 ### Publier une nouvelle version
 
-Augmente `__version__` dans `src/robops/__init__.py` (par exemple `1.2.1`), commit et push, puis relance **Actions → Release → Run workflow**. Si cette version est déjà publiée, le workflow s'arrête et te demande d'augmenter le numéro. Les PC équipés se mettent à jour d'eux-mêmes dans les 24 h.
+Augmente `__version__` dans `src/robops/__init__.py` (par exemple `1.1.1`), commit et push, puis relance **Actions → Release → Run workflow**. Si cette version est déjà publiée, le workflow s'arrête et te demande d'augmenter le numéro. Les PC équipés se mettent à jour d'eux-mêmes dans les 24 h.
 
 ### Dépôt privé
 
@@ -119,7 +120,7 @@ python exe\build.py --install
 
 Le script installe PyInstaller s'il manque, compile `robops.exe` (1 à 2 minutes), le copie dans `%LOCALAPPDATA%\Programs\robops` et ajoute ce dossier à ton PATH. Ouvre ensuite un **nouveau** terminal : `robops --version`.
 
-Pour mettre à jour, relance la même commande après avoir récupéré le nouveau code. L'exécutable se met aussi à jour tout seul depuis les releases GitHub de `StarLightFr51/robops` (change de dépôt avec `--repo owner/nom`). Sans `--install`, les fichiers sont simplement produits dans `dist/`. PyInstaller ne sait pas produire un .exe Windows depuis Linux ou macOS.
+Pour mettre à jour, relance la même commande après avoir récupéré le nouveau code. Ajoute `--repo ton-compte/robops` pour que l'exécutable se mette aussi à jour tout seul depuis les releases GitHub de ce dépôt. Sans `--install`, les fichiers sont simplement produits dans `dist/`. PyInstaller ne sait pas produire un .exe Windows depuis Linux ou macOS.
 
 ## Installation dans ton projet Roblox
 
@@ -139,7 +140,7 @@ Pour mettre à jour, relance la même commande après avoir récupéré le nouve
    ROBLOX_API_KEY=... robops check staging --online   # + clé et IDs auprès de Roblox
    ```
 
-> Tu préfères un dépôt séparé pour l'outil ? Pousse `robops/` sur GitHub et remplace `uses: ./tools/robops` par `uses: StarLightFr51/robops@v1` dans le workflow.
+> **robops dans son propre dépôt GitHub** (recommandé si tu as installé `robops.exe`) : pas besoin de le copier dans ton jeu. Lance `robops init --action-repo ton-compte/robops`, ou remplace à la main les deux `uses: ./tools/robops` du workflow par `uses: ton-compte/robops@main`. Si le dépôt `robops` est **privé**, autorise-le une fois : dans le dépôt `robops`, *Settings → Actions → General → Access → « Accessible from repositories owned by the user … » → Save* (ton dépôt de jeu doit lui aussi être privé).
 
 ## Créer la clé API Open Cloud
 
@@ -222,6 +223,7 @@ robops place update --env production --name "Mon jeu" --server-size 30
 robops servers restart --env production
 
 # DataStores (alias : robops ds)
+robops ds stores --env production                  # liste les DataStores du jeu
 robops ds get GameConfig motd --env production
 robops ds set GameConfig motd --value '"Double XP ce week-end !"' --env production
 robops ds list PlayerData --prefix user_ --env staging
@@ -272,11 +274,23 @@ Protections intégrées :
 - **Copie de sécurité locale.** Avant chaque écriture ou suppression, l'ancien profil est copié dans `.robops/safety/`.
 - **`--all` exige `--yes`**, et les joueurs en ligne sont ignorés (et listés) au lieu de bloquer toute la restauration.
 
-Le backup est écrit au fil de l'eau avec 4 lectures en parallèle (`--workers`, jusqu'à 16) ; le fichier n'apparaît qu'une fois complet. Il accepte aussi les exports faits avec `robops ds export`.
+Si le backup ne trouve aucun joueur alors que le DataStore contient des clés, robops affiche des exemples et la valeur de `key_prefix` à mettre dans `[players]`. Le backup est écrit au fil de l'eau avec 4 lectures en parallèle (`--workers`, jusqu'à 16) ; le fichier n'apparaît qu'une fois complet. Il accepte aussi les exports faits avec `robops ds export`.
 
 > ⚠️ Les backups et les copies de sécurité contiennent des **données personnelles de joueurs**. `robops init` ajoute `.robops/` et `backups/` au `.gitignore` : ne les committe jamais, surtout dans un dépôt public.
 
 Si `useMock` est activé dans DataService (tests dans Studio), ces données ne sont jamais écrites dans un DataStore : il n'y a rien à sauvegarder.
+
+### Backup automatique sur GitHub
+
+Le workflow `.github/workflows/roblox-backup.yml` (créé par `robops init`) sauvegarde tous les profils **chaque nuit** à 02:17 UTC, et à la demande via *Actions → Backup des joueurs → Run workflow*. Il utilise le même secret `ROBLOX_API_KEY` ; la clé doit avoir, pour `universe-datastores`, la liste des clés et la lecture des entrées.
+
+Chaque backup est gardé **30 jours** comme artefact du run : *Actions → Backup des joueurs → clique sur un run → section Artifacts → télécharger*. Seules les personnes ayant accès au dépôt peuvent le télécharger. Pour restaurer, décompresse le .zip téléchargé puis :
+
+```bash
+robops player restore 123456 --from joueurs-production-2026-10-15_0217Z.json.gz --env production
+```
+
+Bon à savoir : les tâches planifiées ne tournent que depuis la branche par défaut (`main`) et peuvent être retardées quand GitHub est chargé ; en cas d'échec, GitHub prévient par e-mail la personne qui a modifié la ligne `cron` en dernier. Dans un dépôt **public**, GitHub les désactive après 60 jours sans activité. Chaque backup consomme environ une minute du quota GitHub Actions (2 000 min/mois en gratuit pour un dépôt privé) et un peu de stockage d'artefacts (500 Mo en gratuit) : réduis `retention-days` si ton jeu a beaucoup de joueurs.
 
 ## Revenir en arrière
 

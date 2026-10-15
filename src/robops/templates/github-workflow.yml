@@ -8,6 +8,12 @@
 #
 #  Le vrai jeu ne se met donc jamais à jour tout seul : c'est toi qui cliques.
 #
+#  L'action robops est chargée depuis « uses: » ci-dessous :
+#    • TON-COMPTE/robops@main  → robops est dans son propre dépôt GitHub
+#      (s'il est privé : dans ce dépôt robops, Settings → Actions → General →
+#      Access → « Accessible from repositories owned by the user … »)
+#    • ./tools/robops          → le dossier robops est copié dans ce dépôt de jeu
+#
 #  Prérequis : un secret de dépôt ROBLOX_API_KEY
 #  (Settings → Secrets and variables → Actions → New repository secret).
 #  Optionnel : ROBLOX_API_KEY_PRODUCTION pour utiliser une clé différente en prod.

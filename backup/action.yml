@@ -1,0 +1,93 @@
+name: robops — backup des joueurs
+description: Sauvegarde tous les profils joueurs (ProfileStore / DataService) et les garde en artefact privé.
+author: robops
+
+# Utilisation (dans le dépôt du jeu) :
+#   - uses: TON-COMPTE/robops/backup@main
+#     with:
+#       environment: production
+#       api-key: ${{ secrets.ROBLOX_API_KEY }}
+#
+# La clé doit avoir, pour universe-datastores, la liste des clés et la lecture des entrées.
+
+inputs:
+  environment:
+    description: Environnement de robops.toml à sauvegarder
+    required: false
+    default: production
+  api-key:
+    description: Clé API Open Cloud (passer un secret)
+    required: true
+  config:
+    description: Chemin du fichier de configuration
+    required: false
+    default: robops.toml
+  retention-days:
+    description: Nombre de jours de conservation du backup sur GitHub
+    required: false
+    default: "30"
+  python-version:
+    description: Version de Python utilisée (3.11 minimum)
+    required: false
+    default: "3.12"
+
+outputs:
+  file:
+    description: Nom du fichier de backup
+    value: ${{ steps.backup.outputs.name }}
+  count:
+    description: Nombre de profils sauvegardés
+    value: ${{ steps.backup.outputs.backup_count }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Installer robops
+      shell: bash
+      run: python -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."
+
+    - name: Sauvegarder les joueurs
+      id: backup
+      shell: bash
+      env:
+        ROBLOX_API_KEY: ${{ inputs.api-key }}
+        IN_ENVIRONMENT: ${{ inputs.environment }}
+        IN_CONFIG: ${{ inputs.config }}
+      run: |
+        set -euo pipefail
+        name="joueurs-${IN_ENVIRONMENT}-$(date -u +%Y-%m-%d_%H%M)Z.json.gz"
+        echo "name=$name" >> "$GITHUB_OUTPUT"
+        robops player backup --env "$IN_ENVIRONMENT" --config "$IN_CONFIG" --out "robops-backup/$name"
+
+    # Envoyé même si quelques profils n'ont pas pu être lus (ils sont listés dans le fichier).
+    - name: Conserver le backup
+      if: success() || failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ steps.backup.outputs.name }}
+        path: robops-backup/${{ steps.backup.outputs.name }}
+        retention-days: ${{ inputs.retention-days }}
+        compression-level: 0          # déjà compressé en .gz
+        if-no-files-found: ignore
+
+    - name: Résumé
+      if: success() || failure()
+      shell: bash
+      env:
+        COUNT: ${{ steps.backup.outputs.backup_count }}
+        NAME: ${{ steps.backup.outputs.name }}
+        DAYS: ${{ inputs.retention-days }}
+      run: |
+        if [ -n "${COUNT:-}" ]; then
+          {
+            echo "### 💾 Backup des joueurs"
+            echo ""
+            echo "**${COUNT}** profil(s) sauvegardé(s) dans \`${NAME}\`, conservé ${DAYS} jours."
+            echo ""
+            echo "Pour le récupérer : section **Artifacts** en bas de cette page → télécharger."
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi

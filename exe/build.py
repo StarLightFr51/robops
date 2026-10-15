@@ -7,9 +7,8 @@ Sur ton PC, depuis le dossier robops (Python 3.11+ requis) :
   → compile robops.exe, le copie dans %LOCALAPPDATA%\\Programs\\robops et ajoute
     ce dossier à ton PATH. Ouvre ensuite un nouveau terminal : `robops --version`.
 
-L'exécutable se met aussi à jour tout seul depuis les releases GitHub de
-StarLightFr51/robops (dépôt gravé dans _build_info.py). --repo owner/nom permet
-d'en viser un autre, c'est ce que fait release.yml avec $GITHUB_REPOSITORY.
+Avec --repo ton-compte/robops, l'exécutable sait aussi se mettre à jour tout
+seul depuis les releases GitHub de ce dépôt (c'est ce que fait release.yml).
 
 PyInstaller ne sait pas produire un .exe Windows depuis Linux ou macOS.
 Résultat dans dist/ : robops.exe, robops-setup.exe et SHA256SUMS.txt
@@ -100,6 +99,8 @@ def main() -> int:
         if path_changed:
             print("✔ Dossier ajouté à ton PATH")
         print("Ouvre un NOUVEAU terminal puis tape :  robops --version")
+        if not args.repo:
+            print("(Sans --repo, pas de mise à jour automatique : relance ce script pour mettre à jour.)")
     return 0
 
 

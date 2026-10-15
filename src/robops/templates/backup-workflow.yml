@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Backup des données joueurs (ProfileStore / DataService) avec robops
+#
+#   • Chaque nuit à 02:17 UTC (04:17 heure de Paris en été, 03:17 en hiver)
+#   • À la demande : onglet Actions → « Backup des joueurs » → Run workflow
+#
+#  Le fichier est gardé 30 jours dans la section « Artifacts » de chaque run.
+#  Il n'est visible que des personnes qui ont accès à ce dépôt (privé).
+#
+#  Prérequis : le secret ROBLOX_API_KEY de ce dépôt, avec en plus, pour
+#  universe-datastores, la liste des clés et la lecture des entrées.
+#
+#  « uses: » : TON-COMPTE/robops/backup@main si robops est dans son propre dépôt,
+#  ./tools/robops/backup si le dossier robops est copié dans ce dépôt.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Backup des joueurs
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: roblox-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Backup production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./tools/robops/backup
+        with:
+          environment: production
+          api-key: ${{ secrets.ROBLOX_API_KEY_PRODUCTION || secrets.ROBLOX_API_KEY }}
+          retention-days: "30"
