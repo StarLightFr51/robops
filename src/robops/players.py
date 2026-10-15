@@ -52,11 +52,16 @@ class PlayerError(Exception):
 
 @dataclass
 class PlayersConfig:
-    """Où DataService range les profils (options profileStoreIndex / profileStoreDataPrefix)."""
+    """Où DataService range les profils (options profileStoreIndex / profileStoreDataPrefix).
+
+    ProfileStore ouvre ses DataStores sans scope (GetDataStore(nom, nil)) : les profils
+    sont donc dans le scope par défaut de Roblox, « global ». On le cible explicitement,
+    car un accès sans scope via Open Cloud ne retrouve pas toujours ces entrées.
+    """
 
     datastore: str = "Default"
     key_prefix: str = "PLAYER_"
-    scope: str | None = None
+    scope: str | None = "global"
 
     def key(self, user_id: str | int) -> str:
         return f"{self.key_prefix}{user_id}"
@@ -307,10 +312,25 @@ class BackupResult:
     other_examples: list[str] | None = None
 
 
+def split_scoped(raw_id: str, scope: str | None) -> tuple[str | None, str]:
+    """Sépare un identifiant renvoyé par la liste Open Cloud en (scope, clé).
+
+    Selon la requête, l'API renvoie « PLAYER_123 » ou « global/PLAYER_123 »
+    (scope préfixé). Une clé contenant « / » n'est découpée que si la partie
+    avant le « / » correspond au scope demandé, ou si aucun scope n'est demandé.
+    """
+    if "/" in raw_id:
+        head, tail = raw_id.split("/", 1)
+        if scope is None or head == scope:
+            return head, tail
+    return scope, raw_id
+
+
 def guess_prefix(keys: Iterable[str]) -> str | None:
     """Devine le préfixe de clés du type <préfixe><UserId> (ex. 'Player_123' → 'Player_')."""
     counts: dict[str, int] = {}
-    for key in keys:
+    for raw in keys:
+        key = split_scoped(raw, None)[1]
         stripped = key.rstrip("0123456789")
         if stripped != key:                      # la clé se termine bien par un nombre
             counts[stripped] = counts.get(stripped, 0) + 1
@@ -339,9 +359,10 @@ def backup_players(
     errors: dict[str, str] = {}
     count = 0
 
-    def fetch(key: str) -> tuple[str, dict | None, str | None]:
+    def fetch(item: tuple[str | None, str]) -> tuple[str, dict | None, str | None]:
+        scope, key = item
         try:
-            entry = client.get_entry(universe_id, cfg.datastore, key, scope=cfg.scope)
+            entry = client.get_entry(universe_id, cfg.datastore, key, scope=scope)
             return key, {"value": entry.get("value"), "users": entry.get("users") or []}, None
         except RobloxApiError as exc:
             return key, None, exc.describe().splitlines()[0]
@@ -359,16 +380,17 @@ def backup_players(
     others: list[str] = []
     other_count = 0
 
-    def matching_keys() -> Iterator[str]:
+    def matching_keys() -> Iterator[tuple[str | None, str]]:
         nonlocal other_count
         taken = 0
-        for key in client.list_entry_ids(universe_id, cfg.datastore, scope=cfg.scope):
+        for raw in client.list_entry_ids(universe_id, cfg.datastore, scope=cfg.scope):
+            scope, key = split_scoped(raw, cfg.scope)
             if not key.startswith(cfg.key_prefix):
                 other_count += 1
                 if len(others) < 5:
-                    others.append(key)
+                    others.append(raw)
                 continue
-            yield key
+            yield scope, key
             taken += 1
             if limit is not None and taken >= limit:
                 return

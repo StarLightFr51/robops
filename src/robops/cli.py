@@ -215,7 +215,8 @@ def cmd_ds_export(args) -> int:
     client = _client(key_env)
     data: dict[str, Any] = {}
     for entry_id in client.list_entry_ids(universe_id, args.datastore, scope=args.scope, prefix=args.prefix):
-        data[entry_id] = client.get_entry(universe_id, args.datastore, entry_id, scope=args.scope).get("value")
+        scope, key = pl.split_scoped(entry_id, args.scope)
+        data[key] = client.get_entry(universe_id, args.datastore, key, scope=scope).get("value")
     Path(args.out).write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     out.success(f"{len(data)} entrée(s) exportée(s) vers {args.out}")
     return EXIT_OK

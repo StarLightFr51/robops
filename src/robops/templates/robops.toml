@@ -19,6 +19,7 @@ api_key_env = "ROBLOX_API_KEY"
 # profileStoreIndex ou profileStoreDataPrefix à DataService:init, recopie-les ici.
 datastore = "Default"           # = profileStoreIndex
 key_prefix = "PLAYER_"          # = profileStoreDataPrefix (clé = PLAYER_<UserId>)
+# scope = "global"              # scope par défaut de ProfileStore, à ne changer que si tu sais pourquoi
 
 [build]
 # Lancée avant chaque déploiement. Supprime cette section si tu commites

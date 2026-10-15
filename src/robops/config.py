@@ -208,8 +208,9 @@ def _parse_players(raw: dict, where: str) -> PlayersConfig:
     datastore = str(raw.get("datastore", defaults.datastore)).strip()
     if not datastore:
         raise ConfigError(f"{where}.datastore ne peut pas être vide.")
-    return PlayersConfig(
-        datastore=datastore,
-        key_prefix=str(raw.get("key_prefix", defaults.key_prefix)),
-        scope=raw.get("scope") or None,
-    )
+    key_prefix = str(raw.get("key_prefix", defaults.key_prefix))
+    scope = raw.get("scope", defaults.scope) or None
+    if "/" in key_prefix and "scope" not in raw:
+        # « global/PLAYER_ » (tel qu'affiché par la liste Open Cloud) = scope global + préfixe PLAYER_
+        scope, key_prefix = key_prefix.split("/", 1)
+    return PlayersConfig(datastore=datastore, key_prefix=key_prefix, scope=scope)

@@ -81,24 +81,43 @@ def test_load_backup_formats(tmp_path):
 # ------------------------------------------------------------- faux DataStore
 
 class FakeDataStore:
-    """Simule l'API DataStore v2 pour un ProfileStore."""
+    """Simule l'API DataStore v2 pour un ProfileStore, comportement réel observé compris :
+
+    - les profils sont dans le scope « global » ;
+    - la liste SANS scope renvoie des identifiants préfixés « global/PLAYER_… » ;
+    - la lecture SANS scope de « global/PLAYER_… » répond 404.
+    """
 
     def __init__(self, entries, datastore="Default"):
         self.entries = {k: {"value": v, "etag": f"etag-{k}", "users": ["users/1"]} for k, v in entries.items()}
         self.datastore = datastore
-        self.patches, self.deletes = [], []
+        self.patches, self.deletes, self.scopes = [], [], []
         self.fail_patch_status = None
 
     def __call__(self, method, url, kw):
-        base = f"/data-stores/{self.datastore}/entries"
+        base = f"/data-stores/{self.datastore}"
         assert base in url, url
         tail = url.split(base, 1)[1]
+        scope = None
+        if tail.startswith("/scopes/"):
+            scope, _, rest = tail[len("/scopes/"):].partition("/")
+            tail = "/" + rest
+        assert tail.startswith("/entries"), url
+        tail = tail[len("/entries"):]
+        self.scopes.append(scope)
         if method == "GET" and tail == "":
-            return FakeResponse(200, {"dataStoreEntries": [{"id": k} for k in sorted(self.entries)]})
+            ids = sorted(self.entries)
+            if scope is None:
+                ids = [f"global/{k}" for k in ids]
+            elif scope != "global":
+                ids = []
+            return FakeResponse(200, {"dataStoreEntries": [{"id": i} for i in ids]})
         key = unquote(tail.lstrip("/"))
+        if scope not in (None, "global"):
+            return FakeResponse(404, {"message": "Entry not found."})
         if method == "GET":
             if key not in self.entries:
-                return FakeResponse(404, {"message": "NOT_FOUND"})
+                return FakeResponse(404, {"message": "Entry not found."})
             return FakeResponse(200, self.entries[key])
         if method == "PATCH":
             if self.fail_patch_status:
@@ -290,3 +309,45 @@ def test_guess_prefix():
     assert pl.guess_prefix(["PLAYER_1", "PLAYER_2", "x"]) == "PLAYER_"
     assert pl.guess_prefix(["42"]) == ""
     assert pl.guess_prefix(["Config", "Settings"]) is None
+
+
+def test_backup_targets_global_scope_by_default(store, tmp_path):
+    assert run("backup", "--out", "b.json") == 0
+    data = json.loads((tmp_path / "b.json").read_text())
+    assert data["count"] == 3 and data["scope"] == "global" and data["errors"] == {}
+    assert set(store.scopes) == {"global"}
+
+
+def test_backup_without_scope_handles_scope_prefixed_ids(store, tmp_path):
+    client = OpenCloudClient("k", session=FakeSession(router=store), sleep=lambda s: None)
+    result = pl.backup_players(client, 99, pl.PlayersConfig(scope=None), tmp_path / "b.json")
+    assert result.count == 3 and result.errors == {}
+    data = json.loads((tmp_path / "b.json").read_text())
+    assert set(data["profiles"]) == {"1", "2", "3"}
+
+
+def test_split_scoped():
+    assert pl.split_scoped("global/PLAYER_1", None) == ("global", "PLAYER_1")
+    assert pl.split_scoped("global/PLAYER_1", "global") == ("global", "PLAYER_1")
+    assert pl.split_scoped("PLAYER_1", "global") == ("global", "PLAYER_1")
+    assert pl.split_scoped("a/b", "global") == ("global", "a/b")
+
+
+def test_scoped_prefix_in_config_is_split(tmp_path):
+    from robops.config import load_config
+    (tmp_path / "robops.toml").write_text("""
+[players]
+key_prefix = "global/PLAYER_"
+
+[environments.prod]
+universe_id = 5
+[[environments.prod.places]]
+place_id = 6
+file = "game.rbxl"
+""")
+    players = load_config(tmp_path / "robops.toml").env("prod").players
+    assert (players.scope, players.key_prefix) == ("global", "PLAYER_")
+
+
+def test_guess_prefix_ignores_scope():
+    assert pl.guess_prefix(["global/PLAYER_4681560223", "global/PLAYER_522534348"]) == "PLAYER_"
