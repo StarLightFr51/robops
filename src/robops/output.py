@@ -1,8 +1,8 @@
-"""Affichage console + intégration GitHub Actions.
+"""Console output + GitHub Actions integration.
 
-Dans un runner (GITHUB_ACTIONS=true), les messages utilisent les commandes de
-workflow (::group::, ::error::, ::notice::) et le résultat du déploiement est
-écrit dans $GITHUB_OUTPUT et $GITHUB_STEP_SUMMARY.
+In a runner (GITHUB_ACTIONS=true), messages use the workflow commands
+(::group::, ::error::, ::notice::) and the deployment result is written to
+$GITHUB_OUTPUT and $GITHUB_STEP_SUMMARY.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from contextlib import contextmanager
 
 
 def ensure_utf8_output() -> None:
-    """Évite les plantages d'encodage sous Windows (✔, accents…) quand la sortie
-    est redirigée vers un fichier ou un pipe en cp1252."""
+    """Avoids encoding crashes on Windows (✔, accents…) when the output
+    is redirected to a file or a pipe in cp1252."""
     for stream in (sys.stdout, sys.stderr):
         try:
             if (stream.encoding or "").lower().replace("-", "") != "utf8":
@@ -29,7 +29,7 @@ def in_github_actions() -> bool:
 
 
 def _escape(msg: str) -> str:
-    # Encodage requis par les commandes de workflow GitHub.
+    # Encoding required by GitHub workflow commands.
     return msg.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 

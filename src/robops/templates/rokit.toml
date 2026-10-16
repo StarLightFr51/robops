@@ -1,3 +1,3 @@
-# Outils de la chaîne Roblox, installés en CI par CompeyDev/setup-rokit.
+# Roblox toolchain tools, installed in CI by CompeyDev/setup-rokit.
 [tools]
 rojo = "rojo-rbx/rojo@7.7.0"

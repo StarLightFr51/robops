@@ -1,15 +1,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  Compilation et publication de robops.exe / robops-setup.exe
+#  Compiling and publishing robops.exe / robops-setup.exe
 #
-#  Méthode simple (bouton) :
-#    onglet Actions → « Release » → Run workflow → branche main → Run workflow.
-#    La version publiée est celle de __version__ dans src/robops/__init__.py.
+#  Simple method (button):
+#    Actions tab → "Release" → Run workflow → branch main → Run workflow.
+#    The published version is __version__ in src/robops/__init__.py.
 #
-#  Méthode git (équivalente) :
-#    git tag v1.2.0 && git push origin v1.2.0   (le tag doit égaler __version__)
+#  Git method (equivalent):
+#    git tag v1.2.0 && git push origin v1.2.0   (the tag must equal __version__)
 #
-#  Pour une nouvelle version : augmente __version__, commit, push, puis relance.
-#  Les PC équipés se mettent à jour tout seuls dans les 24 h.
+#  For a new version: bump __version__, commit, push, then run again.
+#  Equipped PCs update themselves within 24 h.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Release
 
@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write          # nécessaire pour créer la release
+  contents: write          # needed to create the release
 
 concurrency:
   group: release
@@ -48,38 +48,38 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Déterminer la version à publier
+      - name: Determine the version to publish
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(python -c "import re,pathlib;print(re.search(r'__version__ = \"(.+?)\"', pathlib.Path('src/robops/__init__.py').read_text()).group(1))")
           tag="v$version"
-          echo "version du code : $version"
+          echo "code version: $version"
           if [ "$GITHUB_EVENT_NAME" = "push" ]; then
             if [ "$tag" != "$GITHUB_REF_NAME" ]; then
-              echo "::error::Le tag $GITHUB_REF_NAME ne correspond pas à __version__ = \"$version\" (attendu : $tag)."
+              echo "::error::The tag $GITHUB_REF_NAME does not match __version__ = \"$version\" (expected: $tag)."
               exit 1
             fi
           else
             if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-              echo "::error::Lance la release depuis la branche main (« Use workflow from » → main)."
+              echo "::error::Run the release from the main branch (\"Use workflow from\" → main)."
               exit 1
             fi
             if gh release view "$tag" > /dev/null 2>&1; then
-              echo "::error::La version $version est déjà publiée. Augmente __version__ dans src/robops/__init__.py (ex. 1.1.1), commit, push, puis relance."
+              echo "::error::Version $version is already published. Bump __version__ in src/robops/__init__.py (e.g. 1.1.1), commit, push, then run again."
               exit 1
             fi
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Installer les dépendances
+      - name: Install dependencies
         run: python -m pip install --disable-pip-version-check . "pyinstaller==6.*"
 
-      - name: Compiler les exécutables
-        run: python exe/build.py --repo "$GITHUB_REPOSITORY"
+      - name: Compile the executables
+        run: python exe/build.py
 
-      - name: Tester les exécutables
+      - name: Test the executables
         env:
           ROBOPS_NO_UPDATE: "1"
           TAG: ${{ steps.version.outputs.tag }}
@@ -90,23 +90,23 @@ jobs:
           mkdir smoke && cd smoke
           ../dist/robops.exe init
           test -f robops.toml && test -f .github/workflows/roblox-deploy.yml
-          ../dist/robops.exe check || true        # le modèle exige des IDs : on vérifie juste que ça tourne
+          ../dist/robops.exe check || true        # the template requires IDs: we only check that it runs
           ../dist/robops-setup.exe --help
           cd .. && cat dist/SHA256SUMS.txt
 
-      - name: Publier la release
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          # Avec le bouton, le tag n'existe pas encore : gh le crée sur ce commit.
+          # With the button, the tag does not exist yet: gh creates it on this commit.
           gh release create "$TAG" \
             dist/robops.exe dist/robops-setup.exe dist/SHA256SUMS.txt \
             --target "$GITHUB_SHA" \
             --title "robops $TAG" \
             --generate-notes
           {
-            echo "### 🎉 robops $TAG publié"
+            echo "### 🎉 robops $TAG published"
             echo ""
-            echo "Télécharge **robops-setup.exe** depuis la page *Releases* du dépôt."
+            echo "Download **robops-setup.exe** from the repository's *Releases* page."
           } >> "$GITHUB_STEP_SUMMARY"

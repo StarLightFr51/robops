@@ -10,7 +10,7 @@ HKCU = "HKCU"
 
 
 class FakeWinreg:
-    """Registre Windows simulé (HKCU uniquement)."""
+    """Simulated Windows registry (HKCU only)."""
 
     HKEY_CURRENT_USER = HKCU
     KEY_READ, KEY_SET_VALUE = 1, 2
@@ -62,7 +62,7 @@ def test_user_path_add_is_idempotent_and_keeps_type():
     value, kind = reg.path()
     assert value == r"%USERPROFILE%\bin;C:\Tools;C:\Users\Alex\AppData\Local\Programs\robops"
     assert kind == FakeWinreg.REG_EXPAND_SZ
-    # même dossier, autre casse et antislash final : pas de doublon
+    # same folder, different case and trailing backslash: no duplicate
     assert not winsetup.add_to_user_path("c:\\users\\alex\\appdata\\local\\programs\\ROBOPS\\", reg)
     assert winsetup.remove_from_user_path(r"C:\Users\Alex\AppData\Local\Programs\robops", reg)
     assert reg.path()[0] == r"%USERPROFILE%\bin;C:\Tools"
@@ -101,7 +101,7 @@ def test_install_then_uninstall(setup_env, monkeypatch, capsys):
     assert entry["UninstallString"][0] == f'"{install_dir / "robops-setup.exe"}" --uninstall'
     assert not list(install_dir.glob(".download-*"))
     out = capsys.readouterr().out
-    assert "NOUVEAU terminal" in out and "SHA-256 vérifiée" in out
+    assert "NEW terminal" in out and "SHA-256 checksum verified" in out
 
     assert installer.uninstall(install_dir, reg=reg) == 0
     assert reg.path()[0] == r"C:\Tools"
@@ -109,11 +109,23 @@ def test_install_then_uninstall(setup_env, monkeypatch, capsys):
     assert not install_dir.exists()
 
 
+def test_install_uses_default_repo_when_none_is_burned_in(setup_env, monkeypatch):
+    monkeypatch.delenv("ROBOPS_REPO")
+    monkeypatch.setattr(updater._build_info, "REPOSITORY", "")
+    monkeypatch.setattr(winsetup, "installed_version", lambda exe: None)
+    gh = FakeGitHub(tag="v2.3.0")
+
+    assert installer.install(setup_env, session=gh, reg=FakeWinreg("")) == 0
+
+    assert "/repos/StarLightFr51/robops/releases/latest" in gh.calls[0]
+    assert (setup_env / "robops.exe").read_bytes() == NEW_EXE
+
+
 def test_install_skips_download_when_up_to_date(setup_env, monkeypatch, capsys):
     gh = FakeGitHub(tag="v2.3.0")
     monkeypatch.setattr(winsetup, "installed_version", lambda exe: "2.3.0")
     assert installer.install(setup_env, session=gh, reg=FakeWinreg("")) == 0
-    assert "déjà installé et à jour" in capsys.readouterr().out
+    assert "already installed and up to date" in capsys.readouterr().out
     assert not any("assets" in url for url in gh.calls)
 
 
@@ -122,7 +134,7 @@ def test_install_updates_older_version(setup_env, monkeypatch, capsys):
     (setup_env / "robops.exe").write_bytes(b"MZ-1.0")
     monkeypatch.setattr(winsetup, "installed_version", lambda exe: "1.0.0")
     assert installer.install(setup_env, session=FakeGitHub(tag="v2.3.0"), reg=FakeWinreg("")) == 0
-    assert "Mise à jour 1.0.0 → 2.3.0" in capsys.readouterr().out
+    assert "Updating 1.0.0 → 2.3.0" in capsys.readouterr().out
     assert (setup_env / "robops.exe").read_bytes() == NEW_EXE
 
 
@@ -147,7 +159,7 @@ def test_install_local_build(tmp_path):
     assert reg.path()[0] == rf"C:\Tools;{install_dir}"
     assert reg.keys[(HKCU, winsetup.UNINSTALL_KEY)]["DisplayVersion"][0] == "1.1.0"
 
-    # Recompiler puis réinstaller : remplace l'exe, pas de doublon dans le PATH
+    # Recompile then reinstall: replaces the exe, no duplicate in the PATH
     (dist / "robops.exe").write_bytes(b"MZ-local-v2")
     assert installer.install_local(dist / "robops.exe", install_dir, reg=reg) is False
     assert (install_dir / "robops.exe").read_bytes() == b"MZ-local-v2"

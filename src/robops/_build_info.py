@@ -1,9 +1,9 @@
-"""Informations injectées au moment de compiler l'exécutable.
+"""Information injected when the executable is compiled.
 
-Le workflow de release (.github/workflows/release.yml) réécrit ce fichier avant
-d'appeler PyInstaller. En installation pip, les valeurs restent vides et la
-mise à jour automatique est désactivée (on met à jour avec pip).
+The release workflow (.github/workflows/release.yml) rewrites this file before
+calling PyInstaller. With a pip install, the values stay empty and
+automatic updating is disabled (update with pip instead).
 """
 
-# Dépôt GitHub qui publie les releases, ex. "mon-compte/robops".
+# GitHub repository that publishes the releases, e.g. "my-account/robops".
 REPOSITORY = ""

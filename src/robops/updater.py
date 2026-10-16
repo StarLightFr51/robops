@@ -1,16 +1,16 @@
-"""Mise à jour de robops.exe à partir des GitHub Releases du dépôt.
+"""Updating robops.exe from the repository's GitHub Releases.
 
-Chaque release publiée par .github/workflows/release.yml contient :
-  - robops.exe         l'outil
-  - robops-setup.exe   l'installateur
-  - SHA256SUMS.txt     les empreintes SHA-256 des deux fichiers
+Each release published by .github/workflows/release.yml contains:
+  - robops.exe         the tool
+  - robops-setup.exe   the installer
+  - SHA256SUMS.txt     the SHA-256 checksums of both files
 
-Le remplacement de l'exécutable en cours d'utilisation repose sur le fait que
-Windows autorise à *renommer* un .exe lancé (mais pas à l'écraser) : l'ancien
-devient robops.exe.old, le nouveau prend sa place, et l'ancien est supprimé au
-lancement suivant.
+Replacing the running executable relies on the fact that Windows allows
+*renaming* a running .exe (but not overwriting it): the old one becomes
+robops.exe.old, the new one takes its place, and the old one is deleted on
+the next launch.
 
-Dépôt privé : définis ROBOPS_GITHUB_TOKEN (token avec accès en lecture au dépôt).
+Private repository: set ROBOPS_GITHUB_TOKEN (a token with read access to the repository).
 """
 
 from __future__ import annotations
@@ -28,13 +28,13 @@ from typing import Callable
 
 import requests
 
-from . import __version__, _build_info
+from . import DEFAULT_REPOSITORY, __version__, _build_info
 
-GITHUB_API = "https://api.github.com"   # surchargeable via ROBOPS_GITHUB_API (GitHub Enterprise, tests)
+GITHUB_API = "https://api.github.com"   # overridable via ROBOPS_GITHUB_API (GitHub Enterprise, tests)
 EXE_NAME = "robops.exe"
 SETUP_NAME = "robops-setup.exe"
 CHECKSUMS_NAME = "SHA256SUMS.txt"
-CHECK_INTERVAL = 24 * 3600          # une vérification automatique par jour au maximum
+CHECK_INTERVAL = 24 * 3600          # at most one automatic check per day
 
 
 class UpdateError(Exception):
@@ -49,10 +49,16 @@ class Release:
     html_url: str = ""
 
 
-# ------------------------------------------------------------- paramètres
+# ------------------------------------------------------------- settings
+
+def configured_repository() -> str:
+    """Repository set explicitly (ROBOPS_REPO or burned in at build time), '' if none."""
+    return (os.environ.get("ROBOPS_REPO") or _build_info.REPOSITORY or "").strip()
+
 
 def repository() -> str:
-    return (os.environ.get("ROBOPS_REPO") or _build_info.REPOSITORY or "").strip()
+    """Repository to install/update from: the configured one, else the project default."""
+    return configured_repository() or DEFAULT_REPOSITORY
 
 
 def github_token() -> str | None:
@@ -60,7 +66,7 @@ def github_token() -> str | None:
 
 
 def is_frozen() -> bool:
-    """Vrai quand on tourne depuis l'exécutable PyInstaller (et non via pip)."""
+    """True when running from the PyInstaller executable (and not via pip)."""
     return bool(getattr(sys, "frozen", False))
 
 
@@ -96,7 +102,7 @@ def _save_state(state: dict) -> None:
 # --------------------------------------------------------------- versions
 
 def parse_version(text: str) -> tuple[int, ...]:
-    """'v1.2.3' → (1, 2, 3). Les suffixes (-beta…) sont ignorés."""
+    """'v1.2.3' → (1, 2, 3). Suffixes (-beta…) are ignored."""
     cleaned = text.strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
     parts = []
     for piece in cleaned.split("."):
@@ -105,7 +111,7 @@ def parse_version(text: str) -> tuple[int, ...]:
             break
         parts.append(int(digits))
     if not parts:
-        raise UpdateError(f"Numéro de version illisible : {text!r}")
+        raise UpdateError(f"Unreadable version number: {text!r}")
     return tuple(parts)
 
 
@@ -131,24 +137,24 @@ def make_session(token: str | None = None) -> requests.Session:
 
 def latest_release(repo: str, *, session: requests.Session, timeout: float = 15) -> Release:
     if not repo or "/" not in repo:
-        raise UpdateError("Dépôt GitHub inconnu (exécutable compilé sans dépôt, ou ROBOPS_REPO vide).")
+        raise UpdateError("Unknown GitHub repository (expected owner/name, check ROBOPS_REPO).")
     try:
         api = os.environ.get("ROBOPS_GITHUB_API", GITHUB_API).rstrip("/")
         resp = session.get(f"{api}/repos/{repo}/releases/latest", timeout=timeout)
     except requests.RequestException as exc:
-        raise UpdateError(f"Impossible de joindre GitHub : {exc}") from exc
+        raise UpdateError(f"Unable to reach GitHub: {exc}") from exc
     if resp.status_code == 404:
         raise UpdateError(
-            f"Aucune release trouvée sur github.com/{repo}. Soit aucune version n'a encore été publiée, "
-            "soit le dépôt est privé : définis alors ROBOPS_GITHUB_TOKEN."
+            f"No release found on github.com/{repo}. Either no version has been published yet, "
+            "or the repository is private: in that case set ROBOPS_GITHUB_TOKEN."
         )
     headers = getattr(resp, "headers", None) or {}
     if resp.status_code == 429 or (resp.status_code == 403 and headers.get("X-RateLimit-Remaining") == "0"):
-        raise UpdateError("Limite de requêtes GitHub atteinte, réessaie dans une heure.")
+        raise UpdateError("GitHub rate limit reached, try again in an hour.")
     if resp.status_code == 403:
-        raise UpdateError("Accès refusé par GitHub (HTTP 403) : pare-feu/proxy, ou token sans accès au dépôt.")
+        raise UpdateError("Access denied by GitHub (HTTP 403): firewall/proxy, or a token without access to the repository.")
     if resp.status_code != 200:
-        raise UpdateError(f"Réponse GitHub inattendue (HTTP {resp.status_code}).")
+        raise UpdateError(f"Unexpected GitHub response (HTTP {resp.status_code}).")
     payload = resp.json()
     tag = payload.get("tag_name") or ""
     return Release(
@@ -162,15 +168,15 @@ def latest_release(repo: str, *, session: requests.Session, timeout: float = 15)
 def _download(release: Release, name: str, dest: Path, *, session: requests.Session, timeout: float) -> Path:
     asset = release.assets.get(name)
     if not asset:
-        raise UpdateError(f"La release {release.tag} ne contient pas {name}.")
-    # L'URL d'API + Accept octet-stream fonctionne pour les dépôts publics ET privés.
+        raise UpdateError(f"Release {release.tag} does not contain {name}.")
+    # The API URL + Accept octet-stream works for public AND private repositories.
     try:
         resp = session.get(asset["url"], headers={"Accept": "application/octet-stream"},
                            stream=True, timeout=timeout)
     except requests.RequestException as exc:
-        raise UpdateError(f"Téléchargement de {name} impossible : {exc}") from exc
+        raise UpdateError(f"Unable to download {name}: {exc}") from exc
     if resp.status_code != 200:
-        raise UpdateError(f"Téléchargement de {name} refusé (HTTP {resp.status_code}).")
+        raise UpdateError(f"Download of {name} refused (HTTP {resp.status_code}).")
     with open(dest, "wb") as fh:
         for chunk in resp.iter_content(chunk_size=1 << 16):
             if chunk:
@@ -179,7 +185,7 @@ def _download(release: Release, name: str, dest: Path, *, session: requests.Sess
 
 
 def parse_checksums(text: str) -> dict[str, str]:
-    """Lit un fichier « <sha256>  <nom> » (format sha256sum, avec ou sans '*')."""
+    """Reads a "<sha256>  <name>" file (sha256sum format, with or without '*')."""
     sums = {}
     for line in text.splitlines():
         parts = line.strip().split(maxsplit=1)
@@ -198,27 +204,27 @@ def sha256_file(path: Path) -> str:
 
 def fetch_verified(release: Release, name: str, directory: Path, *,
                    session: requests.Session, timeout: float = 300) -> Path:
-    """Télécharge un fichier de la release et vérifie son SHA-256."""
+    """Downloads a file from the release and verifies its SHA-256."""
     directory.mkdir(parents=True, exist_ok=True)
     sums_path = _download(release, CHECKSUMS_NAME, directory / CHECKSUMS_NAME, session=session, timeout=60)
     sums = parse_checksums(sums_path.read_text(encoding="utf-8", errors="replace"))
     if name not in sums:
-        raise UpdateError(f"{CHECKSUMS_NAME} ne contient pas d'empreinte pour {name}.")
+        raise UpdateError(f"{CHECKSUMS_NAME} has no checksum for {name}.")
     path = _download(release, name, directory / name, session=session, timeout=timeout)
     actual = sha256_file(path)
     if actual != sums[name]:
         path.unlink(missing_ok=True)
-        raise UpdateError(f"Empreinte SHA-256 incorrecte pour {name} : fichier corrompu, mise à jour annulée.")
+        raise UpdateError(f"Incorrect SHA-256 checksum for {name}: corrupted file, update cancelled.")
     return path
 
 
-# ------------------------------------------------- remplacement du fichier
+# ------------------------------------------------- replacing the file
 
 def replace_executable(new_file: Path, target: Path) -> None:
-    """Remplace target par new_file, même si target est en cours d'exécution."""
+    """Replaces target with new_file, even if target is running."""
     target.parent.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
-        # Hors Windows, un fichier téléchargé n'est pas exécutable : on reprend les droits de l'ancien.
+        # Outside Windows, a downloaded file is not executable: copy the permissions of the old one.
         try:
             shutil.copymode(target, new_file) if target.exists() else os.chmod(new_file, 0o755)
         except OSError:
@@ -229,19 +235,19 @@ def replace_executable(new_file: Path, target: Path) -> None:
         if backup.exists():
             try:
                 backup.unlink()
-            except OSError:  # un ancien robops tourne encore : on prend un autre nom
+            except OSError:  # an old robops is still running: use another name
                 backup = target.with_name(f"{target.name}.old-{int(time.time())}")
         target.replace(backup)
     try:
         shutil.move(str(new_file), str(target))
     except OSError:
         if backup is not None and not target.exists():
-            backup.replace(target)   # on remet l'ancienne version
+            backup.replace(target)   # put the old version back
         raise
 
 
 def cleanup_old(target: Path) -> None:
-    """Supprime les anciennes versions laissées par une mise à jour (si plus utilisées)."""
+    """Deletes the old versions left behind by an update (if no longer in use)."""
     for leftover in target.parent.glob(target.name + ".old*"):
         try:
             leftover.unlink()
@@ -250,23 +256,21 @@ def cleanup_old(target: Path) -> None:
 
 
 def update_executable(release: Release, target: Path, *, session: requests.Session) -> None:
-    # Téléchargement dans le même dossier : le déplacement final est instantané.
+    # Download into the same folder: the final move is instantaneous.
     with tempfile.TemporaryDirectory(prefix=".robops-update-", dir=target.parent) as tmp:
         new_file = fetch_verified(release, EXE_NAME, Path(tmp), session=session)
         replace_executable(new_file, target)
 
 
-# --------------------------------------------------- mise à jour automatique
+# --------------------------------------------------- automatic update
 
 def auto_update_disabled_reason() -> str | None:
     if not is_frozen():
-        return "installation via pip"
-    if not repository():
-        return "dépôt inconnu"
+        return "installed via pip"
     if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
-        return "intégration continue"
+        return "continuous integration"
     if os.environ.get("ROBOPS_NO_UPDATE"):
-        return "désactivée par ROBOPS_NO_UPDATE"
+        return "disabled by ROBOPS_NO_UPDATE"
     return None
 
 
@@ -281,10 +285,10 @@ def maybe_auto_update(
     session: requests.Session | None = None,
     notify: Callable[[str], None] | None = None,
 ) -> str | None:
-    """Vérifie (au plus une fois par jour) et installe une nouvelle version.
+    """Checks (at most once a day) and installs a new version.
 
-    Ne lève jamais d'exception : une mise à jour ratée ne doit pas casser la
-    commande que l'utilisateur vient de lancer. Retourne la version installée.
+    Never raises: a failed update must not break the command the user just
+    ran. Returns the installed version.
     """
     notify = notify or (lambda msg: print(msg, file=sys.stderr, flush=True))
     if auto_update_disabled_reason():
@@ -302,10 +306,10 @@ def maybe_auto_update(
             return None
         update_executable(release, current_executable(), session=session)
     except (UpdateError, OSError, requests.RequestException) as exc:
-        notify(f"⚠ Mise à jour automatique de robops impossible : {exc}")
+        notify(f"⚠ Automatic robops update failed: {exc}")
         return None
     _save_state({**state, "last_check": now, "installed": release.version})
-    notify(f"✔ robops mis à jour : {__version__} → {release.version} (active au prochain lancement).")
+    notify(f"✔ robops updated: {__version__} → {release.version} (active on next launch).")
     return release.version
 
 

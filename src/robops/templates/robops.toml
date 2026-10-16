@@ -1,48 +1,48 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  robops — configuration du déploiement Roblox (Open Cloud)
+#  robops — Roblox deployment configuration (Open Cloud)
 #
-#  Où trouver les IDs : Creator Dashboard → ton expérience
-#    • universe_id : menu « ⋯ » sur la vignette → « Copy Universe ID »
-#    • place_id    : onglet Places → clic sur la place → ID dans l'URL
+#  Where to find the IDs: Creator Dashboard → your experience
+#    • universe_id: "⋯" menu on the thumbnail → "Copy Universe ID"
+#    • place_id   : Places tab → click the place → ID in the URL
 #
-#  Toute valeur texte peut lire une variable d'environnement :
-#    universe_id = "${ROBLOX_UNIVERSE_ID}"          (obligatoire)
-#    universe_id = "${ROBLOX_UNIVERSE_ID:-123456}"  (avec valeur par défaut)
+#  Any text value can read an environment variable:
+#    universe_id = "${ROBLOX_UNIVERSE_ID}"          (required)
+#    universe_id = "${ROBLOX_UNIVERSE_ID:-123456}"  (with a default value)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Variable d'environnement qui contient la clé API (secret GitHub du même nom).
+# Environment variable that holds the API key (GitHub secret with the same name).
 api_key_env = "ROBLOX_API_KEY"
 
 [players]
-# Où sont rangés les profils joueurs (commandes `robops player …`).
-# Valeurs par défaut de DataService (leifstout) / ProfileStore. Si tu passes
-# profileStoreIndex ou profileStoreDataPrefix à DataService:init, recopie-les ici.
+# Where player profiles are stored (`robops player …` commands).
+# Default values of DataService (leifstout) / ProfileStore. If you pass
+# profileStoreIndex or profileStoreDataPrefix to DataService:init, copy them here.
 datastore = "Default"           # = profileStoreIndex
-key_prefix = "PLAYER_"          # = profileStoreDataPrefix (clé = PLAYER_<UserId>)
-# scope = "global"              # scope par défaut de ProfileStore, à ne changer que si tu sais pourquoi
+key_prefix = "PLAYER_"          # = profileStoreDataPrefix (key = PLAYER_<UserId>)
+# scope = "global"              # ProfileStore's default scope, only change it if you know why
 
 [build]
-# Lancée avant chaque déploiement. Supprime cette section si tu commites
-# directement ton fichier .rbxl / .rbxlx dans le dépôt.
+# Run before each deployment. Remove this section if you commit
+# your .rbxl / .rbxlx file directly in the repository.
 command = "rojo build default.project.json --output build/game.rbxl"
 
 
 # ═══════════════════════════════ STAGING ═════════════════════════════════════
 [environments.staging]
-universe_id = 0                 # ← à remplacer
-version_type = "Published"      # "Saved" = sauvegardé sans être joué par les joueurs
-restart_servers = true          # bascule immédiatement les serveurs sur la nouvelle version
+universe_id = 0                 # ← replace
+version_type = "Published"      # "Saved" = saved without being played by players
+restart_servers = true          # immediately switches servers to the new version
 
 [[environments.staging.places]]
 name = "main"
-place_id = 0                    # ← à remplacer
+place_id = 0                    # ← replace
 file = "build/game.rbxl"
-# Métadonnées optionnelles (mises à jour après la publication) :
-display_name = "Mon jeu [STAGING]"
-# description = "Version de test"
+# Optional metadata (updated after publishing):
+display_name = "My game [STAGING]"
+# description = "Test version"
 # server_size = 10
 
-# Plusieurs places ? Ajoute un bloc par place :
+# Several places? Add one block per place:
 # [[environments.staging.places]]
 # name = "lobby"
 # place_id = 0
@@ -51,19 +51,19 @@ display_name = "Mon jeu [STAGING]"
 
 # ══════════════════════════════ PRODUCTION ═══════════════════════════════════
 [environments.production]
-universe_id = 0                 # ← à remplacer
+universe_id = 0                 # ← replace
 version_type = "Published"
-restart_servers = false         # les serveurs existants finissent leur partie
+restart_servers = false         # existing servers finish their game
 
 [[environments.production.places]]
 name = "main"
-place_id = 0                    # ← à remplacer
+place_id = 0                    # ← replace
 file = "build/game.rbxl"
 
-# Données écrasées UNIQUEMENT avec `robops deploy production --with-datastores`.
-# Le fichier JSON est un objet { "clé": valeur, ... } ; chaque clé est écrasée.
-# Un snapshot des DataStores est pris avant (sauvegarde versionnée 30 jours).
+# Data overwritten ONLY with `robops deploy production --with-datastores`.
+# The JSON file is an object { "key": value, ... }; each key is overwritten.
+# A DataStores snapshot is taken beforehand (versioned backup kept for 30 days).
 # [[environments.production.datastores]]
 # name = "GameConfig"
-# scope = "global"              # optionnel
+# scope = "global"              # optional
 # file = "data/config.production.json"

@@ -31,7 +31,7 @@ def profile(data, *, online=False, age=30):
     }
 
 
-# ------------------------------------------------------------------ unitaires
+# ------------------------------------------------------------------ unit tests
 
 def test_session_states():
     assert pl.session_state(profile({}), NOW).status == "offline"
@@ -40,7 +40,7 @@ def test_session_states():
     assert stale.status == "stale" and stale.writable and "job-abc" in stale.detail
     unknown = profile({}, online=True)
     del unknown["MetaData"]["LastUpdate"]
-    assert pl.session_state(unknown, NOW).status == "online"   # prudence sans date
+    assert pl.session_state(unknown, NOW).status == "online"   # cautious without a date
 
 
 def test_with_data_replaces_only_data_and_unlocks():
@@ -50,7 +50,7 @@ def test_with_data_replaces_only_data_and_unlocks():
     assert result["MetaData"]["ActiveSession"] is None
     assert result["MetaData"]["SessionLoadCount"] == 7
     assert result["GlobalUpdates"] == current["GlobalUpdates"]
-    assert current["MetaData"]["ActiveSession"] is not None   # l'original n'est pas modifié
+    assert current["MetaData"]["ActiveSession"] is not None   # the original is not modified
 
 
 def test_apply_edits_and_changed_fields():
@@ -62,7 +62,7 @@ def test_apply_edits_and_changed_fields():
     assert data["coins"] == 5
     assert pl.changed_fields(data, new) == ["~ coins", "+ deep", "+ inventory", "- old", "~ stats.level", "+ title"]
     with pytest.raises(pl.PlayerError):
-        pl.apply_edits({}, ["sans_egal"])
+        pl.apply_edits({}, ["no_equals_sign"])
 
 
 def test_load_backup_formats(tmp_path):
@@ -72,20 +72,20 @@ def test_load_backup_formats(tmp_path):
     assert list(pl.load_backup(export, cfg)) == ["1"]
 
     native = tmp_path / "b.json"
-    native.write_text(json.dumps({"format": pl.BACKUP_FORMAT, "datastore": "Autre", "key_prefix": "PLAYER_",
+    native.write_text(json.dumps({"format": pl.BACKUP_FORMAT, "datastore": "Other", "key_prefix": "PLAYER_",
                                   "profiles": {}}))
-    with pytest.raises(pl.PlayerError, match="Autre"):
+    with pytest.raises(pl.PlayerError, match="Other"):
         pl.load_backup(native, cfg)
 
 
-# ------------------------------------------------------------- faux DataStore
+# ------------------------------------------------------------- fake DataStore
 
 class FakeDataStore:
-    """Simule l'API DataStore v2 pour un ProfileStore, comportement réel observé compris :
+    """Simulates the DataStore v2 API for a ProfileStore, including the real behaviour observed:
 
-    - les profils sont dans le scope « global » ;
-    - la liste SANS scope renvoie des identifiants préfixés « global/PLAYER_… » ;
-    - la lecture SANS scope de « global/PLAYER_… » répond 404.
+    - profiles are in the "global" scope;
+    - listing WITHOUT a scope returns prefixed identifiers "global/PLAYER_…";
+    - reading "global/PLAYER_…" WITHOUT a scope answers 404.
     """
 
     def __init__(self, entries, datastore="Default"):
@@ -158,7 +158,7 @@ def test_get_prints_data_and_status(store, capsys):
     assert run("get", "2") == 0
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {"coins": 20}
-    assert "en ligne sur le serveur job-abc" in captured.err
+    assert "online on server job-abc" in captured.err
 
 
 def test_backup_then_restore_roundtrip(store, tmp_path):
@@ -186,7 +186,7 @@ def test_restore_refuses_online_player(store, capsys):
     with open("b.json", "w") as fh:
         json.dump({"PLAYER_2": profile({"coins": 999})}, fh)
     assert run("restore", "2", "--from", "b.json") == 1
-    assert "Écriture refusée" in capsys.readouterr().err
+    assert "Write refused" in capsys.readouterr().err
     assert store.patches == []
 
 
@@ -216,14 +216,14 @@ def test_restore_all_requires_yes_and_skips_online(store):
     assert store.patches == []
     assert run("restore", "--all", "--from", "b.json", "--dry-run") == 0
     assert store.patches == []
-    assert run("restore", "--all", "--from", "b.json", "--yes") == 1   # le joueur 2 est en ligne
+    assert run("restore", "--all", "--from", "b.json", "--yes") == 1   # player 2 is online
     assert sorted(p[0] for p in store.patches) == ["PLAYER_1", "PLAYER_3"]
 
 
 def test_concurrent_change_is_reported(store, capsys):
     store.fail_patch_status = 409
     assert run("edit", "1", "--set", "coins=50") == 1
-    assert "a changé entre la lecture et l'écriture" in capsys.readouterr().err
+    assert "changed between the read and the write" in capsys.readouterr().err
 
 
 def test_edit_dry_run_then_write(store, capsys):
@@ -232,7 +232,7 @@ def test_edit_dry_run_then_write(store, capsys):
     assert "~ coins" in capsys.readouterr().out
     assert run("edit", "1", "--set", "coins=50") == 0
     assert store.patches[-1][1]["value"]["Data"] == {"coins": 50}
-    assert run("edit", "2", "--set", "coins=1") == 1          # en ligne
+    assert run("edit", "2", "--set", "coins=1") == 1          # online
     assert run("edit", "2", "--set", "coins=1", "--force") == 0
 
 
@@ -240,7 +240,7 @@ def test_delete_requires_yes(store):
     assert run("delete", "1") == 2
     assert run("delete", "1", "--yes") == 0
     assert store.deletes == ["PLAYER_1"]
-    assert run("delete", "2", "--yes") == 1                    # en ligne
+    assert run("delete", "2", "--yes") == 1                    # online
 
 
 def test_players_section_from_config(tmp_path, monkeypatch):
@@ -283,7 +283,7 @@ def test_empty_backup_explains_why(store, capsys):
     store.entries.clear()
     assert run("backup", "--out", "b.json") == 0
     err = capsys.readouterr().err
-    assert "Aucun profil trouvé" in err and "Data stores manager" in err
+    assert "No profile found" in err and "Data stores manager" in err
 
 
 @pytest.mark.parametrize("keys, expected", [
@@ -294,7 +294,7 @@ def test_backup_suggests_prefix_when_keys_dont_match(store, capsys, keys, expect
     store.entries = {k: {"value": profile({}), "etag": "e", "users": []} for k in keys}
     assert run("backup", "--out", "b.json") == 0
     captured = capsys.readouterr()
-    assert "aucune ne commence par « PLAYER_ »" in captured.err
+    assert "none of them starts with 'PLAYER_'" in captured.err
     assert expected in captured.out
 
 

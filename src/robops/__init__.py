@@ -1,5 +1,9 @@
-"""robops — DevOps Roblox : publication de places et données via Open Cloud."""
+"""robops — Roblox DevOps: publishing places and data via Open Cloud."""
 
-# Seule source de vérité de la version (pyproject.toml la lit ici).
-# Pour publier une release : augmente ce numéro, puis pousse le tag v<version>.
+# Single source of truth for the version (pyproject.toml reads it from here).
+# To publish a release: bump this number, then push the tag v<version>.
 __version__ = "1.2.2"
+
+# GitHub repository whose releases the installer and the updater use when none
+# is configured (ROBOPS_REPO) or burned in at build time (_build_info.py).
+DEFAULT_REPOSITORY = "StarLightFr51/robops"

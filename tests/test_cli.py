@@ -27,7 +27,7 @@ def repo(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_http(monkeypatch):
-    """Remplace la session HTTP de tous les clients créés par la CLI."""
+    """Replaces the HTTP session of every client created by the CLI."""
     session = FakeSession(router=lambda method, url, kw: (
         FakeResponse(200, {"versionNumber": 8}) if "/versions" in url else FakeResponse(200, {"value": {"a": 1}})
     ))
@@ -72,7 +72,7 @@ def test_deploy_publishes_with_key(repo, monkeypatch, fake_http, capsys):
 
 
 def test_options_accepted_after_subcommand(repo, tmp_path):
-    other = tmp_path / "autre.toml"
+    other = tmp_path / "other.toml"
     other.write_text(CONFIG.replace("staging", "qa"))
     assert cli.main(["deploy", "qa", "--dry-run", "-c", str(other)]) == 0
 
@@ -112,9 +112,9 @@ def test_check_and_init(tmp_path, monkeypatch):
     assert (tmp_path / ".github/workflows/roblox-deploy.yml").is_file()
     assert (tmp_path / "rokit.toml").is_file()
     assert ".robops/" in (tmp_path / ".gitignore").read_text()
-    assert cli.main(["init"]) == 0                      # idempotent : pas de doublon
+    assert cli.main(["init"]) == 0                      # idempotent: no duplicates
     assert (tmp_path / ".gitignore").read_text().count(".robops/") == 1
-    # le modèle exige de renseigner les IDs
+    # the template requires the IDs to be filled in
     assert cli.main(["check"]) == 1
 
 
@@ -130,7 +130,7 @@ def test_init_action_repo(tmp_path, monkeypatch):
 
 
 def test_point_to_action_repo_keeps_ref():
-    text = "      - uses: ./tools/robops                  # chemin\n      - uses: ./tools/robops/backup\n"
+    text = "      - uses: ./tools/robops                  # path\n      - uses: ./tools/robops/backup\n"
     result = cli._point_to_action_repo(text, "alex/robops@v1.2.0")
     assert result == "      - uses: alex/robops@v1.2.0\n      - uses: alex/robops/backup@v1.2.0\n"
 

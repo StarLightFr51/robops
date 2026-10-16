@@ -1,24 +1,24 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  Déploiement Roblox avec robops — compatible dépôt privé, compte GitHub gratuit
+#  Roblox deployment with robops — works with a private repository and a free GitHub account
 #
-#   • Pull request     → build + vérifications (dry-run), rien n'est publié
-#   • Push sur main    → build + vérifications (dry-run), rien n'est publié
-#   • Push sur develop → publication automatique sur le jeu de TEST (staging)
-#   • Bouton « Run workflow » (onglet Actions) → publication sur le VRAI jeu
+#   • Pull request     → build + checks (dry-run), nothing is published
+#   • Push to main     → build + checks (dry-run), nothing is published
+#   • Push to develop  → automatic publish to the TEST game (staging)
+#   • "Run workflow" button (Actions tab) → publish to the LIVE game
 #
-#  Le vrai jeu ne se met donc jamais à jour tout seul : c'est toi qui cliques.
+#  The live game therefore never updates on its own: you are the one who clicks.
 #
-#  L'action robops est chargée depuis « uses: » ci-dessous :
-#    • TON-COMPTE/robops@main  → robops est dans son propre dépôt GitHub
-#      (s'il est privé : dans ce dépôt robops, Settings → Actions → General →
-#      Access → « Accessible from repositories owned by the user … »)
-#    • ./tools/robops          → le dossier robops est copié dans ce dépôt de jeu
+#  The robops action is loaded from the "uses:" lines below:
+#    • YOUR-ACCOUNT/robops@main  → robops lives in its own GitHub repository
+#      (if it is private: in that robops repository, Settings → Actions → General →
+#      Access → "Accessible from repositories owned by the user …")
+#    • ./tools/robops            → the robops folder is copied into this game repository
 #
-#  Prérequis : un secret de dépôt ROBLOX_API_KEY
+#  Prerequisite: a ROBLOX_API_KEY repository secret
 #  (Settings → Secrets and variables → Actions → New repository secret).
-#  Optionnel : ROBLOX_API_KEY_PRODUCTION pour utiliser une clé différente en prod.
+#  Optional: ROBLOX_API_KEY_PRODUCTION to use a different key in production.
 # ─────────────────────────────────────────────────────────────────────────────
-name: Déploiement Roblox
+name: Roblox Deploy
 
 on:
   push:
@@ -27,54 +27,54 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: Où publier
+        description: Where to publish
         type: choice
         options: [production, staging]
         default: production
       version_type:
-        description: Type de version
+        description: Version type
         type: choice
         options: [Published, Saved]
         default: Published
       with_datastores:
-        description: Écraser aussi les DataStores configurés
+        description: Also overwrite the configured DataStores
         type: boolean
         default: false
       restart:
-        description: Redémarrer les serveurs
+        description: Restart the servers
         type: choice
-        options: [selon la config, oui, non]
-        default: selon la config
+        options: [per config, yes, no]
+        default: per config
 
 permissions:
   contents: read
 
 jobs:
-  # ── Vérification : compile et contrôle la config, sans rien publier ─────────
+  # ── Verification: builds and checks the config, publishes nothing ───────────
   verify:
-    name: Build et vérifications
+    name: Build and checks
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == 'main')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: CompeyDev/setup-rokit@v0.2.1   # installe Rojo depuis rokit.toml
-      - uses: ./tools/robops                  # chemin du dossier robops dans ce dépôt
+      - uses: CompeyDev/setup-rokit@v0.2.1   # installs Rojo from rokit.toml
+      - uses: ./tools/robops                  # path of the robops folder in this repository
         with:
           environment: production
           dry-run: true
-      - name: Comment publier
+      - name: How to publish
         if: github.event_name == 'push'
         run: |
           {
-            echo "### ✅ Build OK — rien n'a encore été publié"
+            echo "### ✅ Build OK — nothing has been published yet"
             echo ""
-            echo "Pour mettre le vrai jeu à jour : onglet **Actions** → **Déploiement Roblox**"
-            echo "→ **Run workflow** → branche \`main\` → **production** → **Run workflow**."
+            echo "To update the live game: **Actions** tab → **Roblox Deploy**"
+            echo "→ **Run workflow** → branch \`main\` → **production** → **Run workflow**."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # ── Choix de la cible pour une publication ───────────────────────────────────
+  # ── Choosing the target for a publish ────────────────────────────────────────
   target:
-    name: Choix de la cible
+    name: Choose the target
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_name == 'develop')
     runs-on: ubuntu-latest
     outputs:
@@ -88,20 +88,20 @@ jobs:
         run: |
           if [ "$EVENT" = "workflow_dispatch" ]; then env_name="$INPUT_ENV"; else env_name="staging"; fi
           if [ "$env_name" = "production" ] && [ "$REF" != "refs/heads/main" ]; then
-            echo "::error::Le vrai jeu ne se publie que depuis la branche main. Dans « Use workflow from », choisis main."
+            echo "::error::The live game can only be published from the main branch. In \"Use workflow from\", pick main."
             exit 1
           fi
           echo "environment=$env_name" >> "$GITHUB_OUTPUT"
-          echo "Cible : $env_name"
+          echo "Target: $env_name"
 
-  # ── Publication ──────────────────────────────────────────────────────────────
+  # ── Publishing ───────────────────────────────────────────────────────────────
   deploy:
-    name: Publication ${{ needs.target.outputs.environment }}
+    name: Publish ${{ needs.target.outputs.environment }}
     needs: target
     runs-on: ubuntu-latest
     concurrency:
       group: roblox-deploy-${{ needs.target.outputs.environment }}
-      cancel-in-progress: false        # ne jamais couper une publication en cours
+      cancel-in-progress: false        # never cut off a publish that is in progress
     steps:
       - uses: actions/checkout@v7
       - uses: CompeyDev/setup-rokit@v0.2.1
@@ -110,14 +110,14 @@ jobs:
         uses: ./tools/robops
         with:
           environment: ${{ needs.target.outputs.environment }}
-          # Clé dédiée à la prod si elle existe, sinon ROBLOX_API_KEY.
+          # Dedicated production key if it exists, otherwise ROBLOX_API_KEY.
           api-key: ${{ needs.target.outputs.environment == 'production' && secrets.ROBLOX_API_KEY_PRODUCTION || secrets.ROBLOX_API_KEY }}
           version-type: ${{ inputs.version_type }}
           with-datastores: ${{ inputs.with_datastores }}
-          restart: ${{ inputs.restart == 'oui' && 'true' || (inputs.restart == 'non' && 'false' || '') }}
+          restart: ${{ inputs.restart == 'yes' && 'true' || (inputs.restart == 'no' && 'false' || '') }}
 
-      # Conserve le fichier publié : pour revenir en arrière, relance ce workflow
-      # sur un commit précédent (ou publie l'artefact avec `robops publish`).
+      # Keeps the published file: to roll back, re-run this workflow
+      # on a previous commit (or publish the artifact with `robops publish`).
       - uses: actions/upload-artifact@v7
         with:
           name: place-${{ needs.target.outputs.environment }}-${{ github.sha }}

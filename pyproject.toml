@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "robops"
 dynamic = ["version"]
-description = "CLI DevOps Roblox : publie les places et écrase les données d'une expérience via Open Cloud"
+description = "Roblox DevOps CLI: publishes places and overwrites an experience's data via Open Cloud"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["requests>=2.31"]

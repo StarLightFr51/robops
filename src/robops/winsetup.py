@@ -1,7 +1,7 @@
-"""Intégration Windows : PATH utilisateur et « Applications et fonctionnalités ».
+"""Windows integration: user PATH and "Apps & features".
 
-Tout se passe dans HKEY_CURRENT_USER : aucun droit administrateur n'est requis.
-Le module `winreg` est injectable pour pouvoir tester ce code hors de Windows.
+Everything happens in HKEY_CURRENT_USER: no administrator rights are required.
+The `winreg` module is injectable so this code can be tested outside Windows.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\robops"
 def _winreg(reg: Any = None) -> Any:
     if reg is not None:
         return reg
-    import winreg  # disponible uniquement sous Windows
+    import winreg  # only available on Windows
     return winreg
 
 
@@ -55,7 +55,7 @@ def _write_user_path(value: str, kind: int, reg: Any = None) -> None:
 
 
 def add_to_user_path(directory: Path, reg: Any = None) -> bool:
-    """Ajoute le dossier au PATH de l'utilisateur. Retourne False s'il y était déjà."""
+    """Adds the folder to the user's PATH. Returns False if it was already there."""
     current, kind = read_user_path(reg)
     parts = [p for p in current.split(";") if p.strip()]
     if any(_same_dir(p, str(directory)) for p in parts):
@@ -76,7 +76,7 @@ def remove_from_user_path(directory: Path, reg: Any = None) -> bool:
 
 
 def broadcast_environment_change() -> None:
-    """Prévient Windows que le PATH a changé (les nouveaux terminaux le verront)."""
+    """Tells Windows the PATH changed (new terminals will see it)."""
     if os.name != "nt":
         return
     try:
@@ -87,11 +87,11 @@ def broadcast_environment_change() -> None:
         ctypes.windll.user32.SendMessageTimeoutW(
             0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, ctypes.byref(result)
         )
-    except Exception:  # purement cosmétique : ne doit jamais faire échouer l'installation
+    except Exception:  # purely cosmetic: must never make the installation fail
         pass
 
 
-# ------------------------------------------------- Applications et fonctionnalités
+# ------------------------------------------------- Apps & features
 
 def register_uninstall(install_dir: Path, version: str, setup_exe: Path, reg: Any = None) -> None:
     winreg = _winreg(reg)
@@ -122,10 +122,10 @@ def unregister_uninstall(reg: Any = None) -> None:
         pass
 
 
-# ---------------------------------------------------------------- divers
+# ---------------------------------------------------------------- misc
 
 def installed_version(exe: Path) -> str | None:
-    """Version d'un robops.exe déjà installé (None si absent ou illisible)."""
+    """Version of an already installed robops.exe (None if missing or unreadable)."""
     if not exe.is_file():
         return None
     try:

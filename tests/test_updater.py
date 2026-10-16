@@ -4,9 +4,9 @@ import sys
 
 import pytest
 
-from robops import __version__, cli, updater
+from robops import DEFAULT_REPOSITORY, __version__, cli, updater
 
-NEW_EXE = b"MZ-nouvelle-version"
+NEW_EXE = b"MZ-new-version"
 
 
 class Resp:
@@ -25,7 +25,7 @@ class Resp:
 
 
 class FakeGitHub:
-    """Faux GitHub : une release avec robops.exe, robops-setup.exe et SHA256SUMS.txt."""
+    """Fake GitHub: a release with robops.exe, robops-setup.exe and SHA256SUMS.txt."""
 
     def __init__(self, tag="v9.0.0", exe=NEW_EXE, sums=None, latest_status=200, latest_headers=None):
         self.headers = {}
@@ -60,8 +60,16 @@ def test_versions():
         updater.parse_version("latest")
 
 
+def test_repository_falls_back_to_project_default(monkeypatch):
+    monkeypatch.setattr(updater._build_info, "REPOSITORY", "")
+    assert updater.configured_repository() == ""
+    assert updater.repository() == DEFAULT_REPOSITORY == "StarLightFr51/robops"
+    monkeypatch.setenv("ROBOPS_REPO", "me/robops")
+    assert updater.repository() == updater.configured_repository() == "me/robops"
+
+
 def test_parse_checksums_accepts_sha256sum_formats():
-    sums = updater.parse_checksums(f"{'a' * 64} *robops.exe\n{'B' * 64}  robops-setup.exe\nbruit\n")
+    sums = updater.parse_checksums(f"{'a' * 64} *robops.exe\n{'B' * 64}  robops-setup.exe\nnoise\n")
     assert sums == {"robops.exe": "a" * 64, "robops-setup.exe": "b" * 64}
 
 
@@ -70,12 +78,12 @@ def test_latest_release_and_errors():
     assert release.version == "9.0.0" and "robops.exe" in release.assets
     with pytest.raises(updater.UpdateError, match="ROBOPS_GITHUB_TOKEN"):
         updater.latest_release("me/robops", session=FakeGitHub(latest_status=404))
-    with pytest.raises(updater.UpdateError, match="Limite"):
+    with pytest.raises(updater.UpdateError, match="rate limit"):
         updater.latest_release("me/robops", session=FakeGitHub(
             latest_status=403, latest_headers={"X-RateLimit-Remaining": "0"}))
-    with pytest.raises(updater.UpdateError, match="Accès refusé"):
+    with pytest.raises(updater.UpdateError, match="Access denied"):
         updater.latest_release("me/robops", session=FakeGitHub(latest_status=403))
-    with pytest.raises(updater.UpdateError, match="Dépôt"):
+    with pytest.raises(updater.UpdateError, match="Unknown GitHub repository"):
         updater.latest_release("", session=FakeGitHub())
 
 
@@ -107,7 +115,7 @@ def test_replace_running_executable_and_cleanup(tmp_path):
 def frozen_exe(tmp_path, monkeypatch):
     exe = tmp_path / "bin" / "robops.exe"
     exe.parent.mkdir()
-    exe.write_bytes(b"MZ-ancienne-version")
+    exe.write_bytes(b"MZ-old-version")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(exe))
     monkeypatch.setenv("ROBOPS_REPO", "me/robops")
@@ -124,7 +132,7 @@ def test_auto_update_installs_new_version_once_a_day(frozen_exe):
 
     calls = len(gh.calls)
     assert updater.maybe_auto_update(now=1000 + 3600, session=gh, notify=messages.append) is None
-    assert len(gh.calls) == calls                       # pas de nouvel appel avant 24 h
+    assert len(gh.calls) == calls                       # no new call within 24 h
 
     updater.cleanup_after_update()
     assert not (frozen_exe.parent / "robops.exe.old").exists()
@@ -133,7 +141,7 @@ def test_auto_update_installs_new_version_once_a_day(frozen_exe):
 def test_auto_update_does_nothing_when_up_to_date(frozen_exe):
     gh = FakeGitHub(tag=f"v{__version__}")
     assert updater.maybe_auto_update(now=1, session=gh, notify=lambda m: None) is None
-    assert frozen_exe.read_bytes() == b"MZ-ancienne-version"
+    assert frozen_exe.read_bytes() == b"MZ-old-version"
     assert len(gh.calls) == 1
 
 
@@ -148,18 +156,18 @@ def test_auto_update_disabled_in_ci_or_on_request(frozen_exe, monkeypatch, var):
 def test_auto_update_disabled_without_exe(monkeypatch):
     monkeypatch.setenv("ROBOPS_REPO", "me/robops")
     gh = FakeGitHub()
-    assert updater.auto_update_disabled_reason() == "installation via pip"
+    assert updater.auto_update_disabled_reason() == "installed via pip"
     assert updater.maybe_auto_update(now=1, session=gh) is None and gh.calls == []
 
 
 def test_auto_update_failure_never_raises(frozen_exe):
     messages = []
-    gh = FakeGitHub(sums="")                              # pas d'empreinte → refus
+    gh = FakeGitHub(sums="")                              # no checksum → refused
     assert updater.maybe_auto_update(now=1, session=gh, notify=messages.append) is None
-    assert frozen_exe.read_bytes() == b"MZ-ancienne-version"
-    assert "impossible" in messages[0]
+    assert frozen_exe.read_bytes() == b"MZ-old-version"
+    assert "failed" in messages[0]
     state = json.loads((frozen_exe.parent.parent / "state" / "update.json").read_text())
-    assert state["last_check"] == 1                       # on ne réessaie pas à chaque commande
+    assert state["last_check"] == 1                       # we don't retry on every command
 
 
 def test_self_update_command_with_pip_install(capsys):

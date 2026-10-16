@@ -1,7 +1,7 @@
-"""Chargement et validation du fichier robops.toml.
+"""Loading and validation of the robops.toml file.
 
-Les chaînes peuvent contenir des références ${VARIABLE} résolues depuis
-l'environnement (pratique pour garder les IDs dans les variables GitHub).
+Strings may contain ${VARIABLE} references resolved from the environment
+(handy for keeping IDs in GitHub variables).
 """
 
 from __future__ import annotations
@@ -59,9 +59,9 @@ class Environment:
 
 @dataclass
 class Config:
-    """Configuration chargée. Chaque environnement n'est validé (et ses ${VAR}
-    résolues) qu'au moment où on le demande : déployer en staging n'exige pas
-    que les variables de production existent."""
+    """Loaded configuration. Each environment is only validated (and its ${VAR}
+    resolved) when it is requested: deploying to staging does not require
+    the production variables to exist."""
 
     path: Path
     root: Path
@@ -76,8 +76,8 @@ class Config:
 
     def env(self, name: str) -> Environment:
         if name not in self.raw_environments:
-            known = ", ".join(self.names) or "aucun"
-            raise ConfigError(f"Environnement '{name}' absent de {self.path} (disponibles : {known}).")
+            known = ", ".join(self.names) or "none"
+            raise ConfigError(f"Environment '{name}' not found in {self.path} (available: {known}).")
         return _parse_environment(self, name, self.raw_environments[name])
 
 
@@ -89,7 +89,7 @@ def _expand(value: Any, where: str) -> Any:
             if resolved is None or resolved == "":
                 if default is not None:
                     return default
-                raise ConfigError(f"{where} : la variable d'environnement {var} n'est pas définie.")
+                raise ConfigError(f"{where}: the environment variable {var} is not set.")
             return resolved
         return _VAR_RE.sub(repl, value)
     if isinstance(value, list):
@@ -103,26 +103,26 @@ def _as_int(value: Any, where: str) -> int:
     try:
         number = int(str(value).strip())
     except (TypeError, ValueError):
-        raise ConfigError(f"{where} doit être un entier (reçu : {value!r}).") from None
+        raise ConfigError(f"{where} must be an integer (got: {value!r}).") from None
     if number <= 0:
-        raise ConfigError(f"{where} doit être strictement positif.")
+        raise ConfigError(f"{where} must be greater than 0.")
     return number
 
 
 def _require(table: dict, key: str, where: str) -> Any:
     if key not in table or table[key] in (None, ""):
-        raise ConfigError(f"Champ obligatoire manquant : {where}.{key}")
+        raise ConfigError(f"Required field missing: {where}.{key}")
     return table[key]
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
     config_path = Path(path)
     if not config_path.is_file():
-        raise ConfigError(f"Fichier de configuration introuvable : {config_path}")
+        raise ConfigError(f"Configuration file not found: {config_path}")
     try:
         raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"{config_path} n'est pas un TOML valide : {exc}") from exc
+        raise ConfigError(f"{config_path} is not valid TOML: {exc}") from exc
 
     root = config_path.resolve().parent
     default_key_env = raw.get("api_key_env", "ROBLOX_API_KEY")
@@ -130,7 +130,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
 
     envs_raw = raw.get("environments")
     if not isinstance(envs_raw, dict) or not envs_raw:
-        raise ConfigError(f"{config_path} doit définir au moins une section [environments.<nom>].")
+        raise ConfigError(f"{config_path} must define at least one [environments.<name>] section.")
 
     return Config(
         path=config_path,
@@ -149,11 +149,11 @@ def _parse_environment(cfg: Config, env_name: str, env_raw: dict) -> Environment
 
     version_type = env_raw.get("version_type", "Published")
     if version_type not in ("Published", "Saved"):
-        raise ConfigError(f"{where}.version_type doit valoir 'Published' ou 'Saved'.")
+        raise ConfigError(f"{where}.version_type must be 'Published' or 'Saved'.")
 
     places_raw = env_raw.get("places") or []
     if not places_raw:
-        raise ConfigError(f"{where} doit déclarer au moins une [[{where}.places]].")
+        raise ConfigError(f"{where} must declare at least one [[{where}.places]].")
 
     places: list[PlaceConfig] = []
     seen: set[str] = set()
@@ -161,7 +161,7 @@ def _parse_environment(cfg: Config, env_name: str, env_raw: dict) -> Environment
         pw = f"{where}.places[{i}]"
         name = str(p.get("name") or f"place{i + 1}")
         if name in seen:
-            raise ConfigError(f"{pw} : nom de place en double '{name}'.")
+            raise ConfigError(f"{pw}: duplicate place name '{name}'.")
         seen.add(name)
         server_size = p.get("server_size")
         places.append(
@@ -198,19 +198,19 @@ def _parse_environment(cfg: Config, env_name: str, env_raw: dict) -> Environment
 
 
 def _parse_players(raw: dict, where: str) -> PlayersConfig:
-    """Section [players] : où DataService / ProfileStore range les profils."""
+    """[players] section: where DataService / ProfileStore keeps the profiles."""
     raw = _expand(raw, where)
     unknown = set(raw) - {"datastore", "key_prefix", "scope"}
     if unknown:
-        raise ConfigError(f"{where} : champ(s) inconnu(s) {', '.join(sorted(unknown))} "
-                          "(attendus : datastore, key_prefix, scope).")
+        raise ConfigError(f"{where}: unknown field(s) {', '.join(sorted(unknown))} "
+                          "(expected: datastore, key_prefix, scope).")
     defaults = PlayersConfig()
     datastore = str(raw.get("datastore", defaults.datastore)).strip()
     if not datastore:
-        raise ConfigError(f"{where}.datastore ne peut pas être vide.")
+        raise ConfigError(f"{where}.datastore cannot be empty.")
     key_prefix = str(raw.get("key_prefix", defaults.key_prefix))
     scope = raw.get("scope", defaults.scope) or None
     if "/" in key_prefix and "scope" not in raw:
-        # « global/PLAYER_ » (tel qu'affiché par la liste Open Cloud) = scope global + préfixe PLAYER_
+        # "global/PLAYER_" (as shown by the Open Cloud list) = global scope + PLAYER_ prefix
         scope, key_prefix = key_prefix.split("/", 1)
     return PlayersConfig(datastore=datastore, key_prefix=key_prefix, scope=scope)

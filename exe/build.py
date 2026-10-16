@@ -1,17 +1,18 @@
-"""Compile robops.exe et robops-setup.exe avec PyInstaller (sous Windows).
+"""Compiles robops.exe and robops-setup.exe with PyInstaller (on Windows).
 
-Sur ton PC, depuis le dossier robops (Python 3.11+ requis) :
+On your PC, from the robops folder (Python 3.11+ required):
 
     python exe/build.py --install
 
-  → compile robops.exe, le copie dans %LOCALAPPDATA%\\Programs\\robops et ajoute
-    ce dossier à ton PATH. Ouvre ensuite un nouveau terminal : `robops --version`.
+  → compiles robops.exe, copies it to %LOCALAPPDATA%\\Programs\\robops and adds
+    that folder to your PATH. Then open a new terminal: `robops --version`.
 
-Avec --repo ton-compte/robops, l'exécutable sait aussi se mettre à jour tout
-seul depuis les releases GitHub de ce dépôt (c'est ce que fait release.yml).
+The executables install and update themselves from the GitHub releases of
+DEFAULT_REPOSITORY (see src/robops/__init__.py). Use --repo owner/name to burn
+in another repository.
 
-PyInstaller ne sait pas produire un .exe Windows depuis Linux ou macOS.
-Résultat dans dist/ : robops.exe, robops-setup.exe et SHA256SUMS.txt
+PyInstaller cannot produce a Windows .exe from Linux or macOS.
+Result in dist/: robops.exe, robops-setup.exe and SHA256SUMS.txt
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_INFO = ROOT / "src" / "robops" / "_build_info.py"
+
+sys.path.insert(0, str(ROOT / "src"))
+from robops import DEFAULT_REPOSITORY  # noqa: E402  (robops/__init__.py has no dependencies)
 
 
 def sha256(path: Path) -> str:
@@ -43,39 +47,40 @@ def pyinstaller(*args: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--repo", help="dépôt GitHub des releases (owner/nom) → active la mise à jour automatique")
+    parser.add_argument("--repo", default=DEFAULT_REPOSITORY,
+                        help=f"GitHub repository of the releases (owner/name) burned into the executables "
+                             f"(default: {DEFAULT_REPOSITORY})")
     parser.add_argument("--install", action="store_true",
-                        help="installe robops.exe sur ce PC et l'ajoute au PATH (Windows)")
+                        help="install robops.exe on this PC and add it to the PATH (Windows)")
     args = parser.parse_args()
-    if args.repo and "/" not in args.repo:
-        parser.error("--repo doit être de la forme owner/nom")
+    if "/" not in args.repo:
+        parser.error("--repo must be of the form owner/name")
     if args.install and os.name != "nt":
-        parser.error("--install ne fonctionne que sous Windows")
+        parser.error("--install only works on Windows")
     if sys.version_info < (3, 11):
-        parser.error("Python 3.11 ou plus récent est nécessaire")
+        parser.error("Python 3.11 or newer is required")
 
-    # 0. Outils de compilation.
-    print("Installation des dépendances (requests, PyInstaller)…", flush=True)
+    # 0. Build tools.
+    print("Installing dependencies (requests, PyInstaller)…", flush=True)
     try:
         import PyInstaller  # noqa: F401
     except ImportError:
         pip("pyinstaller==6.*")
     pip(str(ROOT))
 
-    # 1. Graver le dépôt (si fourni) puis réinstaller le paquet pour que PyInstaller voie ce code.
+    # 1. Burn in the repository, then reinstall the package so PyInstaller sees this code.
     original = BUILD_INFO.read_text(encoding="utf-8")
-    if args.repo:
-        BUILD_INFO.write_text(f'REPOSITORY = "{args.repo}"\n', encoding="utf-8")
+    BUILD_INFO.write_text(f'REPOSITORY = "{args.repo}"\n', encoding="utf-8")
     try:
         pip("--no-deps", "--force-reinstall", str(ROOT))
-        # 2. Compilation des deux exécutables.
-        print("Compilation de robops.exe et robops-setup.exe (1 à 2 minutes)…", flush=True)
+        # 2. Compile both executables.
+        print("Compiling robops.exe and robops-setup.exe (1 to 2 minutes)…", flush=True)
         pyinstaller("--name", "robops", "--collect-data", "robops", "exe/entry_cli.py")
         pyinstaller("--name", "robops-setup", "exe/entry_setup.py")
     finally:
         BUILD_INFO.write_text(original, encoding="utf-8")
 
-    # 3. Empreintes SHA-256 (vérifiées par l'installateur et la mise à jour automatique).
+    # 3. SHA-256 checksums (verified by the installer and the automatic update).
     dist = ROOT / "dist"
     binaries = sorted(p for p in dist.iterdir() if p.name.startswith("robops") and p.is_file()
                       and p.suffix in (".exe", ""))
@@ -84,10 +89,10 @@ def main() -> int:
     for line in lines:
         print(line)
 
-    # 4. Installation locale (optionnelle).
+    # 4. Local installation (optional).
     if args.install:
         import importlib
-        importlib.invalidate_caches()   # le paquet vient d'être installé par pip
+        importlib.invalidate_caches()   # the package was just installed by pip
         from robops import __version__
         from robops.installer import install_local
         from robops.winsetup import default_install_dir
@@ -95,12 +100,10 @@ def main() -> int:
         install_dir = default_install_dir()
         path_changed = install_local(dist / "robops.exe", install_dir,
                                      setup_exe=dist / "robops-setup.exe", version=__version__)
-        print(f"\n✔ robops {__version__} installé dans {install_dir}")
+        print(f"\n✔ robops {__version__} installed in {install_dir}")
         if path_changed:
-            print("✔ Dossier ajouté à ton PATH")
-        print("Ouvre un NOUVEAU terminal puis tape :  robops --version")
-        if not args.repo:
-            print("(Sans --repo, pas de mise à jour automatique : relance ce script pour mettre à jour.)")
+            print("✔ Folder added to your PATH")
+        print("Open a NEW terminal then type:  robops --version")
     return 0
 
 

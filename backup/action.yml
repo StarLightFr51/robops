@@ -1,42 +1,42 @@
-name: robops — backup des joueurs
-description: Sauvegarde tous les profils joueurs (ProfileStore / DataService) et les garde en artefact privé.
+name: robops — player backup
+description: Backs up all player profiles (ProfileStore / DataService) and keeps them as a private artifact.
 author: robops
 
-# Utilisation (dans le dépôt du jeu) :
-#   - uses: TON-COMPTE/robops/backup@main
+# Usage (in the game repository):
+#   - uses: YOUR-ACCOUNT/robops/backup@main
 #     with:
 #       environment: production
 #       api-key: ${{ secrets.ROBLOX_API_KEY }}
 #
-# La clé doit avoir, pour universe-datastores, la liste des clés et la lecture des entrées.
+# The key must have, for universe-datastores, the permission to list keys and read entries.
 
 inputs:
   environment:
-    description: Environnement de robops.toml à sauvegarder
+    description: robops.toml environment to back up
     required: false
     default: production
   api-key:
-    description: Clé API Open Cloud (passer un secret)
+    description: Open Cloud API key (pass a secret)
     required: true
   config:
-    description: Chemin du fichier de configuration
+    description: Path of the configuration file
     required: false
     default: robops.toml
   retention-days:
-    description: Nombre de jours de conservation du backup sur GitHub
+    description: Number of days the backup is kept on GitHub
     required: false
     default: "30"
   python-version:
-    description: Version de Python utilisée (3.11 minimum)
+    description: Python version to use (3.11 minimum)
     required: false
     default: "3.12"
 
 outputs:
   file:
-    description: Nom du fichier de backup
+    description: Name of the backup file
     value: ${{ steps.backup.outputs.name }}
   count:
-    description: Nombre de profils sauvegardés
+    description: Number of profiles backed up
     value: ${{ steps.backup.outputs.backup_count }}
 
 runs:
@@ -46,11 +46,11 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
-    - name: Installer robops
+    - name: Install robops
       shell: bash
       run: python -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."
 
-    - name: Sauvegarder les joueurs
+    - name: Back up the players
       id: backup
       shell: bash
       env:
@@ -59,22 +59,22 @@ runs:
         IN_CONFIG: ${{ inputs.config }}
       run: |
         set -euo pipefail
-        name="joueurs-${IN_ENVIRONMENT}-$(date -u +%Y-%m-%d_%H%M)Z.json.gz"
+        name="players-${IN_ENVIRONMENT}-$(date -u +%Y-%m-%d_%H%M)Z.json.gz"
         echo "name=$name" >> "$GITHUB_OUTPUT"
         robops player backup --env "$IN_ENVIRONMENT" --config "$IN_CONFIG" --out "robops-backup/$name"
 
-    # Envoyé même si quelques profils n'ont pas pu être lus (ils sont listés dans le fichier).
-    - name: Conserver le backup
+    # Uploaded even if a few profiles could not be read (they are listed in the file).
+    - name: Keep the backup
       if: success() || failure()
       uses: actions/upload-artifact@v7
       with:
         name: ${{ steps.backup.outputs.name }}
         path: robops-backup/${{ steps.backup.outputs.name }}
         retention-days: ${{ inputs.retention-days }}
-        compression-level: 0          # déjà compressé en .gz
+        compression-level: 0          # already compressed as .gz
         if-no-files-found: ignore
 
-    - name: Résumé
+    - name: Summary
       if: success() || failure()
       shell: bash
       env:
@@ -84,10 +84,10 @@ runs:
       run: |
         if [ -n "${COUNT:-}" ]; then
           {
-            echo "### 💾 Backup des joueurs"
+            echo "### 💾 Player backup"
             echo ""
-            echo "**${COUNT}** profil(s) sauvegardé(s) dans \`${NAME}\`, conservé ${DAYS} jours."
+            echo "**${COUNT}** profile(s) saved to \`${NAME}\`, kept for ${DAYS} days."
             echo ""
-            echo "Pour le récupérer : section **Artifacts** en bas de cette page → télécharger."
+            echo "To retrieve it: **Artifacts** section at the bottom of this page → download."
           } >> "$GITHUB_STEP_SUMMARY"
         fi

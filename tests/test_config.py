@@ -14,7 +14,7 @@ restart_servers = true
 name = "main"
 place_id = "${STAGING_PLACE:-222}"
 file = "build/game.rbxl"
-display_name = "Jeu [STAGING]"
+display_name = "Game [STAGING]"
 
 [environments.production]
 universe_id = "${PROD_UNIVERSE}"
@@ -37,7 +37,7 @@ def test_parses_environment_and_defaults(tmp_path):
     env = cfg.env("staging")
     assert cfg.names == ["staging", "production"]
     assert env.universe_id == 111
-    assert env.places[0].place_id == 222          # valeur par défaut de ${STAGING_PLACE:-222}
+    assert env.places[0].place_id == 222          # default value of ${STAGING_PLACE:-222}
     assert env.places[0].file == (tmp_path / "build/game.rbxl").resolve()
     assert env.places[0].has_metadata
     assert env.build_command == "rojo build -o build/game.rbxl"
@@ -47,7 +47,7 @@ def test_parses_environment_and_defaults(tmp_path):
 
 def test_env_vars_are_resolved_lazily(tmp_path, monkeypatch):
     cfg = load_config(write(tmp_path, BASE))
-    # staging fonctionne même si PROD_UNIVERSE n'existe pas
+    # staging works even if PROD_UNIVERSE does not exist
     cfg.env("staging")
     with pytest.raises(ConfigError, match="PROD_UNIVERSE"):
         cfg.env("production")
@@ -60,21 +60,21 @@ def test_env_vars_are_resolved_lazily(tmp_path, monkeypatch):
 
 def test_unknown_environment(tmp_path):
     cfg = load_config(write(tmp_path, BASE))
-    with pytest.raises(ConfigError, match="disponibles : staging, production"):
+    with pytest.raises(ConfigError, match="available: staging, production"):
         cfg.env("dev")
 
 
 @pytest.mark.parametrize(
     "text, message",
     [
-        ("[environments.a]\nuniverse_id = 1\n", "au moins une"),
+        ("[environments.a]\nuniverse_id = 1\n", "at least one"),
         ("[environments.a]\n[[environments.a.places]]\nplace_id = 1\nfile = 'x.rbxl'\n", "universe_id"),
         ("[environments.a]\nuniverse_id = 0\n[[environments.a.places]]\nplace_id = 1\nfile = 'x.rbxl'\n",
-         "strictement positif"),
+         "greater than 0"),
         ("[environments.a]\nuniverse_id = 1\nversion_type = 'Live'\n"
          "[[environments.a.places]]\nplace_id = 1\nfile = 'x.rbxl'\n", "Published"),
         ("[environments.a]\nuniverse_id = 'abc'\n[[environments.a.places]]\nplace_id = 1\nfile = 'x.rbxl'\n",
-         "entier"),
+         "integer"),
     ],
 )
 def test_validation_errors(tmp_path, text, message):
@@ -84,9 +84,9 @@ def test_validation_errors(tmp_path, text, message):
 
 
 def test_missing_file_and_bad_toml(tmp_path):
-    with pytest.raises(ConfigError, match="introuvable"):
+    with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "nope.toml")
-    with pytest.raises(ConfigError, match="TOML valide"):
+    with pytest.raises(ConfigError, match="valid TOML"):
         load_config(write(tmp_path, "[[["))
 
 
@@ -95,5 +95,5 @@ def test_bundled_template_is_valid_toml_but_requires_ids(tmp_path):
     text = (resources.files("robops") / "templates" / "robops.toml").read_text(encoding="utf-8")
     cfg = load_config(write(tmp_path, text))
     assert cfg.names == ["staging", "production"]
-    with pytest.raises(ConfigError, match="strictement positif"):
+    with pytest.raises(ConfigError, match="greater than 0"):
         cfg.env("staging")

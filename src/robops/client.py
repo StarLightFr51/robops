@@ -1,13 +1,13 @@
-"""Client minimal pour l'API Roblox Open Cloud.
+"""Minimal client for the Roblox Open Cloud API.
 
-Couvre ce dont un pipeline de déploiement a besoin :
-  - publication d'une place (.rbxl / .rbxlx)            -> universe-places:write
-  - lecture / mise à jour des métadonnées d'une place   -> universe.place:write
-  - redémarrage des serveurs d'une expérience           -> universe:write
-  - DataStores standard (lecture, écrasement, suppression, liste, snapshot)
+Covers what a deployment pipeline needs:
+  - publishing a place (.rbxl / .rbxlx)                 -> universe-places:write
+  - reading / updating a place's metadata               -> universe.place:write
+  - restarting an experience's servers                  -> universe:write
+  - standard DataStores (read, overwrite, delete, list, snapshot)
 
-Toutes les requêtes passent par `_request`, qui gère les retries (429 / 5xx)
-avec backoff exponentiel et respecte l'en-tête Retry-After.
+All requests go through `_request`, which handles retries (429 / 5xx)
+with exponential backoff and honours the Retry-After header.
 """
 
 from __future__ import annotations
@@ -27,29 +27,29 @@ from . import __version__
 BASE_URL = "https://apis.roblox.com"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
-# Indications en français affichées avec les erreurs HTTP les plus fréquentes.
+# Hints displayed along with the most common HTTP errors.
 STATUS_HINTS = {
-    400: "Requête invalide : fichier de place corrompu, JSON mal formé ou paramètre incorrect.",
+    400: "Invalid request: corrupted place file, malformed JSON or incorrect parameter.",
     401: (
-        "Clé API refusée. Vérifie qu'elle n'a pas expiré et que ses restrictions d'IP "
-        "autorisent la machine courante (les runners GitHub Actions ont des IP dynamiques : "
-        "il faut autoriser 0.0.0.0/0)."
+        "API key rejected. Check that it has not expired and that its IP restrictions "
+        "allow the current machine (GitHub Actions runners have dynamic IPs: "
+        "you must allow 0.0.0.0/0)."
     ),
     403: (
-        "Permission manquante. Vérifie que la clé a bien l'expérience ciblée et la "
-        "permission requise par cette opération (scope indiqué ci-dessus)."
+        "Missing permission. Check that the key includes the targeted experience and the "
+        "permission required by this operation (scope shown above)."
     ),
-    404: "Ressource introuvable : universe_id, place_id, DataStore ou clé incorrect(e).",
+    404: "Resource not found: incorrect universe_id, place_id, DataStore or key.",
     409: (
-        "Conflit : la place n'appartient pas à cet univers, ou une session Team Create "
-        "est ouverte sur la place (bloque la mise à jour des métadonnées)."
+        "Conflict: the place does not belong to this universe, or a Team Create session "
+        "is open on the place (it blocks the metadata update)."
     ),
-    429: "Limite de requêtes atteinte (la publication est limitée à ~30 requêtes/minute).",
+    429: "Rate limit reached (publishing is limited to ~30 requests/minute).",
 }
 
 
 class RobloxApiError(Exception):
-    """Erreur renvoyée par l'API Open Cloud."""
+    """Error returned by the Open Cloud API."""
 
     def __init__(self, status: int, message: str, *, scope: str | None = None, body: str = ""):
         self.status = status
@@ -60,10 +60,10 @@ class RobloxApiError(Exception):
 
     def describe(self) -> str:
         if self.status == 0:
-            return f"Impossible de joindre apis.roblox.com : {self.message}"
-        parts = [f"HTTP {self.status} : {self.message}"]
+            return f"Unable to reach apis.roblox.com: {self.message}"
+        parts = [f"HTTP {self.status}: {self.message}"]
         if self.scope:
-            parts.append(f"Permission requise : {self.scope}")
+            parts.append(f"Required permission: {self.scope}")
         hint = STATUS_HINTS.get(self.status)
         if hint:
             parts.append(hint)
@@ -84,14 +84,14 @@ def _content_type_for(path: Path) -> str:
         return "application/octet-stream"
     if suffix == ".rbxlx":
         return "application/xml"
-    raise ValueError(f"Extension non supportée pour une place : {path.name} (attendu .rbxl ou .rbxlx)")
+    raise ValueError(f"Unsupported extension for a place: {path.name} (expected .rbxl or .rbxlx)")
 
 
 def _entry_segment(key: str, *, for_read: bool = False) -> str:
-    """Encode une clé de DataStore pour l'URL.
+    """Encodes a DataStore key for the URL.
 
-    Si la clé contient '@', l'API l'interprète comme un identifiant de révision ;
-    en lecture on ajoute '@latest' pour lever l'ambiguïté.
+    If the key contains '@', the API interprets it as a revision identifier;
+    when reading we append '@latest' to remove the ambiguity.
     """
     segment = quote(key, safe="")
     if for_read and "@" in key:
@@ -112,7 +112,7 @@ class OpenCloudClient:
         sleep=time.sleep,
     ):
         if not api_key:
-            raise ValueError("Clé API Open Cloud manquante.")
+            raise ValueError("Open Cloud API key missing.")
         self.base_url = base_url.rstrip("/")
         self.max_retries = max_retries
         self.backoff_base = backoff_base
@@ -184,7 +184,7 @@ class OpenCloudClient:
         try:
             payload = response.json()
         except ValueError:
-            return response.text.strip()[:500] or response.reason or "erreur inconnue"
+            return response.text.strip()[:500] or response.reason or "unknown error"
         if isinstance(payload, dict):
             for key in ("message", "error", "title"):
                 if isinstance(payload.get(key), str) and payload[key]:
@@ -194,7 +194,7 @@ class OpenCloudClient:
                 return str(errors[0].get("message", errors[0]))
         return json.dumps(payload)[:500]
 
-    # ------------------------------------------------------------ Publication
+    # ------------------------------------------------------------ Publishing
 
     def publish_place(
         self,
@@ -204,9 +204,9 @@ class OpenCloudClient:
         *,
         version_type: str = "Published",
     ) -> PublishResult:
-        """Écrase le contenu de la place avec le fichier fourni (nouvelle version)."""
+        """Overwrites the place's content with the provided file (new version)."""
         if version_type not in ("Published", "Saved"):
-            raise ValueError("version_type doit valoir 'Published' ou 'Saved'.")
+            raise ValueError("version_type must be 'Published' or 'Saved'.")
         path = Path(file_path)
         content_type = _content_type_for(path)
         payload = path.read_bytes()
@@ -222,7 +222,7 @@ class OpenCloudClient:
             version = int(response.json()["versionNumber"])
         except (ValueError, KeyError, TypeError) as exc:
             raise RobloxApiError(
-                response.status_code, f"Réponse inattendue : {response.text[:200]}"
+                response.status_code, f"Unexpected response: {response.text[:200]}"
             ) from exc
         return PublishResult(universe_id, place_id, version, version_type)
 
@@ -252,7 +252,7 @@ class OpenCloudClient:
         if server_size is not None:
             body["serverSize"] = int(server_size)
         if not body:
-            raise ValueError("Aucun champ à mettre à jour.")
+            raise ValueError("No field to update.")
         return self._request(
             "PATCH",
             f"/cloud/v2/universes/{universe_id}/places/{place_id}",
@@ -261,10 +261,10 @@ class OpenCloudClient:
             json_body=body,
         ).json()
 
-    # -------------------------------------------------------------- Univers
+    # -------------------------------------------------------------- Universe
 
     def restart_servers(self, universe_id: int) -> None:
-        """Redémarre les serveurs dont la version est antérieure à la dernière publiée."""
+        """Restarts the servers running a version older than the latest published one."""
         self._request(
             "POST",
             f"/cloud/v2/universes/{universe_id}:restartServers",
@@ -302,13 +302,13 @@ class OpenCloudClient:
         allow_missing: bool = True,
         etag: str | None = None,
     ) -> dict:
-        """Écrase la valeur d'une entrée (la crée si allow_missing).
+        """Overwrites an entry's value (creates it if allow_missing).
 
-        Attention : l'API ne fait pas de mise à jour partielle. Si `users` ou
-        `attributes` ne sont pas fournis, ils sont effacés côté Roblox.
+        Warning: the API does not do partial updates. If `users` or
+        `attributes` are not provided, they are erased on Roblox's side.
 
-        `etag` (lu lors d'un GET) protège contre les écritures concurrentes :
-        si l'entrée a changé depuis la lecture, Roblox refuse la mise à jour.
+        `etag` (read during a GET) protects against concurrent writes:
+        if the entry changed since it was read, Roblox refuses the update.
         """
         body: dict[str, Any] = {"value": value}
         if users:
@@ -321,7 +321,7 @@ class OpenCloudClient:
         return self._request(
             "PATCH",
             f"{base}/{_entry_segment(key)}",
-            scope="universe-datastores.objects:update (+ :create si l'entrée n'existe pas)",
+            scope="universe-datastores.objects:update (+ :create if the entry does not exist)",
             params={"allowMissing": "true" if allow_missing else "false"},
             json_body=body,
         ).json()
@@ -364,7 +364,7 @@ class OpenCloudClient:
             params = {**params, "pageToken": token}
 
     def list_datastores(self, universe_id: int, *, prefix: str | None = None) -> Iterator[str]:
-        """Noms des DataStores de l'expérience."""
+        """Names of the experience's DataStores."""
         params: dict[str, Any] = {"maxPageSize": 100}
         if prefix:
             params["filter"] = f'id.startsWith("{prefix}")'
@@ -381,9 +381,9 @@ class OpenCloudClient:
             params = {**params, "pageToken": token}
 
     def snapshot_datastores(self, universe_id: int) -> dict:
-        """Snapshot : garantit une sauvegarde versionnée de toutes les données (30 jours).
+        """Snapshot: guarantees a versioned backup of all the data (30 days).
 
-        Limité à un snapshot par jour UTC ; les appels suivants sont sans effet.
+        Limited to one snapshot per UTC day; subsequent calls have no effect.
         """
         return self._request(
             "POST",

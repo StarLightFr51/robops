@@ -24,7 +24,7 @@ class FakeResponse:
 
 
 class FakeSession:
-    """Session HTTP factice : renvoie les réponses dans l'ordre et enregistre les appels."""
+    """Fake HTTP session: returns the responses in order and records the calls."""
 
     def __init__(self, responses=None, router=None):
         self.headers = {}

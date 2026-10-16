@@ -45,7 +45,7 @@ class FakeClient:
 def project(tmp_path):
     (tmp_path / "build").mkdir()
     (tmp_path / "data").mkdir()
-    (tmp_path / "data" / "config.json").write_text(json.dumps({"motd": "Salut", "event": {"x2": True}}))
+    (tmp_path / "data" / "config.json").write_text(json.dumps({"motd": "Hello", "event": {"x2": True}}))
     builder = f'{sys.executable} -c "open(\'build/game.rbxl\',\'wb\').write(b\'PLACE\')"'
     (tmp_path / "robops.toml").write_text(f"""
 [build]
@@ -59,7 +59,7 @@ restart_servers = true
 name = "main"
 place_id = 20
 file = "build/game.rbxl"
-display_name = "Mon jeu"
+display_name = "My game"
 server_size = 30
 
 [[environments.prod.places]]
@@ -87,9 +87,9 @@ def test_full_deploy_runs_every_step_in_order(project):
     kinds = [c[0] for c in client.calls]
     assert kinds == ["publish", "publish", "update_place", "snapshot", "set_entry", "set_entry", "restart"]
     assert report.versions() == {"main": 101, "lobby": 102}
-    assert client.calls[2] == ("update_place", 20, {"display_name": "Mon jeu", "description": None, "server_size": 30})
-    # users/attributes existants conservés, entrée absente créée sans métadonnées
-    assert client.calls[4] == ("set_entry", "GameConfig", "motd", "Salut", ["users/1"], {"a": 1})
+    assert client.calls[2] == ("update_place", 20, {"display_name": "My game", "description": None, "server_size": 30})
+    # existing users/attributes kept, missing entry created without metadata
+    assert client.calls[4] == ("set_entry", "GameConfig", "motd", "Hello", ["users/1"], {"a": 1})
     assert client.calls[5] == ("set_entry", "GameConfig", "event", {"x2": True}, None, None)
     assert report.datastore_writes == 2 and report.restarted
     assert "| main | `20` |" in report.to_markdown()
@@ -97,7 +97,7 @@ def test_full_deploy_runs_every_step_in_order(project):
 
 def test_dry_run_builds_but_never_creates_client(project):
     def boom():
-        raise AssertionError("aucun client ne doit être créé en dry-run")
+        raise AssertionError("no client must be created in dry-run")
 
     cfg = load_config(project / "robops.toml")
     report = deploy(cfg.env("prod"), DeployOptions(dry_run=True, with_datastores=True),
@@ -121,13 +121,13 @@ def test_place_filter_and_saved_skips_restart(project):
 
 
 def test_unknown_place_filter(project):
-    with pytest.raises(DeployError, match="inconnue"):
+    with pytest.raises(DeployError, match="Unknown place"):
         run(project, DeployOptions(only_places=["nope"]), FakeClient())
 
 
 def test_metadata_failure_is_a_warning_unless_strict(project):
     report = run(project, DeployOptions(restart=False), FakeClient(fail_metadata=True))
-    assert report.places[0].metadata == "échec (409)"
+    assert report.places[0].metadata == "failed (409)"
     with pytest.raises(RobloxApiError):
         run(project, DeployOptions(restart=False, strict_metadata=True), FakeClient(fail_metadata=True))
 
@@ -136,7 +136,7 @@ def test_preflight_fails_before_any_api_call(project):
     toml = (project / "robops.toml").read_text().replace("command = ", "# command = ")
     (project / "robops.toml").write_text(toml)
     client = FakeClient()
-    with pytest.raises(DeployError, match="introuvable"):
+    with pytest.raises(DeployError, match="not found"):
         run(project, DeployOptions(), client)
     assert client.calls == []
 

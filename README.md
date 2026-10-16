@@ -1,63 +1,63 @@
-# robops — DevOps Roblox en ligne de commande
+# robops — Roblox DevOps on the command line
 
-`robops` est une CLI Python qui **écrase le contenu de tes places Roblox** (et, si tu le veux, les données de tes DataStores) depuis ton dépôt Git, via l'API officielle **Open Cloud**. Elle est pensée pour tourner dans **GitHub Actions** : un push sur `develop` met à jour le staging, un push sur `main` met à jour la production.
+`robops` is a Python CLI that **overwrites the content of your Roblox places** (and, if you want, the data in your DataStores) from your Git repository, through the official **Open Cloud** API. It is designed to run in **GitHub Actions**: a push to `develop` updates staging, a push to `main` updates production.
 
 ```
-push main ──► build Rojo ──► vérifications ──► publication des places ──► métadonnées
-                                                   │                        │
-                                                   └──► DataStores (opt-in) ─┴──► redémarrage des serveurs
+push main ──► Rojo build ──► checks ──► publish places ──────► metadata
+                                           │                         │
+                                           └──► DataStores (opt-in) ─┴──► server restart
 ```
 
-## Ce que ça fait
+## What it does
 
-| Étape | Détail | Permission de la clé API |
+| Step | Detail | API key permission |
 |---|---|---|
-| Build | lance `rojo build` (ou toute autre commande) | — |
-| Vérifications | fichiers présents, `.rbxl`/`.rbxlx`, JSON des données valides — **avant** tout appel réseau | — |
-| Publication | chaque place est écrasée par son fichier (nouvelle version `Published` ou `Saved`) | `universe-places:write` |
-| Métadonnées | nom, description, nombre de joueurs par serveur | `universe.place:write` |
-| DataStores | snapshot de sauvegarde, puis écrasement des clés depuis un JSON | `universe-datastores.objects:update` + `:create` + `universe-datastores.control:snapshot` |
-| Redémarrage | bascule les serveurs sur la nouvelle version | `universe:write` |
-| Joueurs (`robops player`) | backup, restauration, édition des profils ProfileStore / DataService | `universe-datastores.objects:list` + `:read` + `:update` (+ `:create`, `:delete`) |
+| Build | runs `rojo build` (or any other command) | — |
+| Checks | files present, `.rbxl`/`.rbxlx`, valid data JSON — **before** any network call | — |
+| Publishing | each place is overwritten by its file (new `Published` or `Saved` version) | `universe-places:write` |
+| Metadata | name, description, players per server | `universe.place:write` |
+| DataStores | backup snapshot, then overwrite the keys from a JSON | `universe-datastores.objects:update` + `:create` + `universe-datastores.control:snapshot` |
+| Restart | switches the servers to the new version | `universe:write` |
+| Players (`robops player`) | backup, restore, edit ProfileStore / DataService profiles | `universe-datastores.objects:list` + `:read` + `:update` (+ `:create`, `:delete`) |
 
-Autres points :
-- retries automatiques (429 / 5xx) avec backoff exponentiel et respect de `Retry-After` ;
-- messages d'erreur en français avec la cause probable (clé expirée, IP non autorisée, permission manquante…) ;
-- en CI : logs groupés, annotations `::error::`, résumé du déploiement dans l'onglet *Summary*, versions publiées exposées en *outputs* ;
-- `--dry-run` : build + vérifications sans jamais contacter Roblox (utilisé sur les pull requests).
+Other points:
+- automatic retries (429 / 5xx) with exponential backoff, honouring `Retry-After`;
+- error messages that include the probable cause (expired key, IP not allowed, missing permission…);
+- in CI: grouped logs, `::error::` annotations, deployment summary in the *Summary* tab, published versions exposed as *outputs*;
+- `--dry-run`: build + checks without ever contacting Roblox (used on pull requests).
 
-## Arborescence
+## Layout
 
 ```
 robops/
-├── action.yml                  # action GitHub de déploiement (uses: TON-COMPTE/robops@main)
-├── backup/action.yml           # action GitHub de backup des joueurs (uses: TON-COMPTE/robops/backup@main)
-├── exe/                        # compilation de robops.exe et robops-setup.exe (PyInstaller)
+├── action.yml                  # deployment GitHub action (uses: YOUR-ACCOUNT/robops@main)
+├── backup/action.yml           # player backup GitHub action (uses: YOUR-ACCOUNT/robops/backup@main)
+├── exe/                        # compiling robops.exe and robops-setup.exe (PyInstaller)
 ├── pyproject.toml
 ├── src/robops/
-│   ├── cli.py                  # commandes
-│   ├── client.py               # client Open Cloud (HTTP, retries, erreurs)
-│   ├── config.py               # lecture de robops.toml
-│   ├── deploy.py               # orchestration du déploiement
-│   ├── output.py               # sortie console / GitHub Actions
-│   ├── players.py              # profils ProfileStore / DataService (verrous, backup, restauration)
-│   ├── updater.py              # mise à jour automatique depuis les GitHub Releases
-│   ├── installer.py            # installateur Windows (robops-setup.exe)
-│   ├── winsetup.py             # PATH utilisateur et « Applications et fonctionnalités »
-│   └── templates/              # fichiers générés par `robops init`
-├── tests/                      # 88 tests (API Roblox, GitHub et registre Windows simulés)
+│   ├── cli.py                  # commands
+│   ├── client.py               # Open Cloud client (HTTP, retries, errors)
+│   ├── config.py               # reading robops.toml
+│   ├── deploy.py               # deployment orchestration
+│   ├── output.py               # console / GitHub Actions output
+│   ├── players.py              # ProfileStore / DataService profiles (locks, backup, restore)
+│   ├── updater.py              # automatic update from GitHub Releases
+│   ├── installer.py            # Windows installer (robops-setup.exe)
+│   ├── winsetup.py             # user PATH and "Apps & features"
+│   └── templates/              # files generated by `robops init`
+├── tests/                      # 88 tests (Roblox API, GitHub and Windows registry mocked)
 └── .github/workflows/
-    ├── ci.yml                  # tests de l'outil lui-même
-    └── release.yml             # compile les .exe et publie une release à chaque tag v*
+    ├── ci.yml                  # tests of the tool itself
+    └── release.yml             # compiles the .exe files and publishes a release on every v* tag
 ```
 
-## Version Windows (.exe) avec installateur et mise à jour automatique
+## Windows version (.exe) with installer and automatic update
 
-Sur ton PC, tu peux utiliser `robops.exe` sans installer Python. Les exécutables sont compilés par GitHub Actions sur une machine Windows et publiés dans les *Releases* du dépôt de l'outil.
+On your PC you can use `robops.exe` without installing Python. The executables are compiled by GitHub Actions on a Windows machine and published in the tool repository's *Releases*.
 
-### Mise en place (une seule fois)
+### Setup (one time only)
 
-1. Crée sur GitHub un dépôt nommé `robops` (privé ou public) et envoie-y le contenu de ce dossier, à la racine :
+1. Create a repository named `robops` on GitHub (private or public) and push the content of this folder to it, at the root:
 
    ```bash
    cd robops
@@ -65,119 +65,119 @@ Sur ton PC, tu peux utiliser `robops.exe` sans installer Python. Les exécutable
    git add .
    git commit -m "robops 1.1.0"
    git branch -M main
-   git remote add origin https://github.com/TON-COMPTE/robops.git
+   git remote add origin https://github.com/YOUR-ACCOUNT/robops.git
    git push -u origin main
    ```
 
-2. Lance la compilation : onglet **Actions** du dépôt `robops` → **Release** (colonne de gauche) → **Run workflow** → branche `main` → **Run workflow**.
+2. Start the build: **Actions** tab of the `robops` repository → **Release** (left column) → **Run workflow** → branch `main` → **Run workflow**.
 
-   En 5 minutes environ, le workflow lance les tests, compile `robops.exe` et `robops-setup.exe` sur une machine Windows, les teste, calcule leurs empreintes SHA-256 et crée la release `v1.1.0`. Le nom du dépôt est gravé dans les exécutables : rien à configurer.
+   In about 5 minutes, the workflow runs the tests, compiles `robops.exe` and `robops-setup.exe` on a Windows machine, tests them, computes their SHA-256 checksums and creates the release `v1.1.0`. The repository name (`StarLightFr51/robops`, `DEFAULT_REPOSITORY` in `src/robops/__init__.py`) is burned into the executables, and also used as a fallback if it is missing: nothing to configure.
 
-3. Les fichiers apparaissent dans la section **Releases**, à droite de la page d'accueil du dépôt.
+3. The files appear in the **Releases** section, on the right of the repository's home page.
 
-Si tu préfères git, pousser le tag `v1.1.0` (`git tag v1.1.0 && git push origin v1.1.0`) déclenche la même chose.
+If you prefer git, pushing the tag `v1.1.0` (`git tag v1.1.0 && git push origin v1.1.0`) triggers the same thing.
 
-### Installer sur un PC
+### Installing on a PC
 
-Télécharge `robops-setup.exe` depuis la page *Releases* et double-clique dessus. L'installateur :
+Download `robops-setup.exe` from the *Releases* page and double-click it. The installer:
 
-- interroge le dépôt et récupère la dernière version de `robops.exe` ;
-- vérifie son empreinte SHA-256 avant de l'installer ;
-- l'installe dans `%LOCALAPPDATA%\Programs\robops` (sans droits administrateur) ;
-- ajoute ce dossier au **PATH** de ton compte Windows ;
-- l'enregistre dans **Applications et fonctionnalités** pour pouvoir le désinstaller.
+- queries the repository and fetches the latest version of `robops.exe`;
+- verifies its SHA-256 checksum before installing it;
+- installs it in `%LOCALAPPDATA%\Programs\robops` (no administrator rights);
+- adds that folder to your Windows account's **PATH**;
+- registers it in **Apps & features** so it can be uninstalled.
 
-Ouvre ensuite un **nouveau** terminal et tape `robops --version`. Relancer l'installateur plus tard met à jour l'outil (`--force` pour réinstaller la même version).
+Then open a **new** terminal and type `robops --version`. Running the installer again later updates the tool (`--force` to reinstall the same version).
 
-> Les .exe ne sont pas signés numériquement : au premier lancement, Windows SmartScreen affiche « Windows a protégé votre ordinateur ». Clique sur **Informations complémentaires** puis **Exécuter quand même**. Certains antivirus signalent aussi à tort les programmes compilés avec PyInstaller. Pour supprimer ces avertissements, il faut un certificat de signature de code (payant).
+> The .exe files are not digitally signed: on first launch, Windows SmartScreen shows "Windows protected your PC". Click **More info** then **Run anyway**. Some antivirus programs also wrongly flag programs compiled with PyInstaller. Removing these warnings requires a code-signing certificate (paid).
 
-### Mise à jour automatique
+### Automatic update
 
-- Une fois par jour au maximum, après une commande, `robops.exe` regarde s'il existe une release plus récente. Si oui, il la télécharge, vérifie son empreinte et remplace l'exécutable ; la nouvelle version sert dès le lancement suivant.
-- Une mise à jour ratée (pas de réseau, fichier corrompu…) affiche un avertissement mais ne fait jamais échouer ta commande.
-- `robops self-update` force la mise à jour tout de suite ; `robops self-update --check` dit seulement s'il y en a une.
-- La mise à jour automatique est **désactivée en CI** (variables `CI` / `GITHUB_ACTIONS`) et avec `ROBOPS_NO_UPDATE=1`. Avec une installation pip, elle n'existe pas : on met à jour avec pip.
+- At most once a day, after a command, `robops.exe` checks whether a newer release exists. If so, it downloads it, verifies its checksum and replaces the executable; the new version is used from the next launch.
+- A failed update (no network, corrupted file…) shows a warning but never makes your command fail.
+- `robops self-update` forces the update right away; `robops self-update --check` only tells you whether there is one.
+- Automatic update is **disabled in CI** (`CI` / `GITHUB_ACTIONS` variables) and with `ROBOPS_NO_UPDATE=1`. With a pip install it does not exist: update with pip.
 
-### Publier une nouvelle version
+### Publishing a new version
 
-Augmente `__version__` dans `src/robops/__init__.py` (par exemple `1.1.1`), commit et push, puis relance **Actions → Release → Run workflow**. Si cette version est déjà publiée, le workflow s'arrête et te demande d'augmenter le numéro. Les PC équipés se mettent à jour d'eux-mêmes dans les 24 h.
+Bump `__version__` in `src/robops/__init__.py` (for example `1.1.1`), commit and push, then run **Actions → Release → Run workflow** again. If that version is already published, the workflow stops and asks you to bump the number. Equipped PCs update themselves within 24 h.
 
-### Dépôt privé
+### Private repository
 
-Les appels à GitHub nécessitent alors un token. Crée un *fine-grained token* avec uniquement **Contents : Read** sur le dépôt de robops, puis enregistre-le dans une variable d'environnement utilisateur Windows nommée `ROBOPS_GITHUB_TOKEN`. L'installateur et la mise à jour automatique l'utilisent tous les deux.
+GitHub calls then need a token. Create a *fine-grained token* with only **Contents: Read** on the robops repository, then store it in a Windows user environment variable named `ROBOPS_GITHUB_TOKEN`. The installer and the automatic update both use it.
 
-### Désinstaller
+### Uninstalling
 
-*Paramètres → Applications → robops → Désinstaller*, ou `robops-setup.exe --uninstall`. Le dossier, l'entrée du PATH et l'entrée du registre sont retirés.
+*Settings → Apps → robops → Uninstall*, or `robops-setup.exe --uninstall`. The folder, the PATH entry and the registry entry are removed.
 
-### Compiler et installer sur ton PC, sans GitHub
+### Compiling and installing on your PC, without GitHub
 
-Sur un PC Windows avec Python 3.11+ (installé depuis python.org, case *Add python.exe to PATH* cochée), ouvre un terminal dans le dossier `robops` et lance :
+On a Windows PC with Python 3.11+ (installed from python.org, *Add python.exe to PATH* checked), open a terminal in the `robops` folder and run:
 
 ```powershell
 python exe\build.py --install
 ```
 
-Le script installe PyInstaller s'il manque, compile `robops.exe` (1 à 2 minutes), le copie dans `%LOCALAPPDATA%\Programs\robops` et ajoute ce dossier à ton PATH. Ouvre ensuite un **nouveau** terminal : `robops --version`.
+The script installs PyInstaller if it is missing, compiles `robops.exe` (1 to 2 minutes), copies it to `%LOCALAPPDATA%\Programs\robops` and adds that folder to your PATH. Then open a **new** terminal: `robops --version`.
 
-Pour mettre à jour, relance la même commande après avoir récupéré le nouveau code. Ajoute `--repo ton-compte/robops` pour que l'exécutable se mette aussi à jour tout seul depuis les releases GitHub de ce dépôt. Sans `--install`, les fichiers sont simplement produits dans `dist/`. PyInstaller ne sait pas produire un .exe Windows depuis Linux ou macOS.
+To update, run the same command again after pulling the new code. The executables install and update themselves from the GitHub releases of `StarLightFr51/robops` (`DEFAULT_REPOSITORY` in `src/robops/__init__.py`); pass `--repo owner/name` to burn in another repository, or set `ROBOPS_REPO` at run time. Without `--install`, the files are simply produced in `dist/`. PyInstaller cannot produce a Windows .exe from Linux or macOS.
 
-## Installation dans ton projet Roblox
+## Installing in your Roblox project
 
-1. Copie le dossier `robops/` dans ton dépôt de jeu, sous `tools/robops/`.
-2. Installe-le localement (Python 3.11 minimum) puis génère la configuration :
+1. Copy the `robops/` folder into your game repository, under `tools/robops/`.
+2. Install it locally (Python 3.11 minimum), then generate the configuration:
 
    ```bash
    pip install ./tools/robops
    robops init
    ```
 
-   Cela crée `robops.toml`, `.github/workflows/roblox-deploy.yml` et `rokit.toml` (Rojo 7.7.0) — les fichiers existants ne sont pas écrasés sans `--force`.
-3. Remplace les `0` de `robops.toml` par tes vrais IDs, puis vérifie :
+   This creates `robops.toml`, `.github/workflows/roblox-deploy.yml` and `rokit.toml` (Rojo 7.7.0) — existing files are not overwritten without `--force`.
+3. Replace the `0`s in `robops.toml` with your real IDs, then check:
 
    ```bash
-   robops check                       # configuration seule
-   ROBLOX_API_KEY=... robops check staging --online   # + clé et IDs auprès de Roblox
+   robops check                       # configuration only
+   ROBLOX_API_KEY=... robops check staging --online   # + key and IDs against Roblox
    ```
 
-> **robops dans son propre dépôt GitHub** (recommandé si tu as installé `robops.exe`) : pas besoin de le copier dans ton jeu. Lance `robops init --action-repo ton-compte/robops`, ou remplace à la main les deux `uses: ./tools/robops` du workflow par `uses: ton-compte/robops@main`. Si le dépôt `robops` est **privé**, autorise-le une fois : dans le dépôt `robops`, *Settings → Actions → General → Access → « Accessible from repositories owned by the user … » → Save* (ton dépôt de jeu doit lui aussi être privé).
+> **robops in its own GitHub repository** (recommended if you installed `robops.exe`): no need to copy it into your game. Run `robops init --action-repo your-account/robops`, or manually replace the two `uses: ./tools/robops` in the workflow with `uses: your-account/robops@main`. If the `robops` repository is **private**, allow it once: in the `robops` repository, *Settings → Actions → General → Access → "Accessible from repositories owned by the user …" → Save* (your game repository must be private too).
 
-## Créer la clé API Open Cloud
+## Creating the Open Cloud API key
 
-Creator Dashboard → **Credentials** → *Create API Key* :
+Creator Dashboard → **Credentials** → *Create API Key*:
 
-- **Access permissions** : ajoute l'expérience concernée et les permissions du tableau ci-dessus (au minimum `universe-places` → *Write*).
-- **Security → Accepted IP addresses** : les runners GitHub Actions changent d'IP à chaque exécution, il faut donc autoriser `0.0.0.0/0`. C'est la cause n°1 des erreurs **401** en CI.
-- Fixe une **date d'expiration** et utilise idéalement **une clé par environnement** (staging / production).
+- **Access permissions**: add the relevant experience and the permissions from the table above (at minimum `universe-places` → *Write*).
+- **Security → Accepted IP addresses**: GitHub Actions runners change IP on every run, so you must allow `0.0.0.0/0`. This is the #1 cause of **401** errors in CI.
+- Set an **expiration date** and ideally use **one key per environment** (staging / production).
 
-## Configurer GitHub
+## Configuring GitHub
 
-Dans le dépôt de ton jeu : *Settings → Secrets and variables → Actions → onglet Secrets → New repository secret*, nom **`ROBLOX_API_KEY`**, valeur = ta clé Roblox. C'est tout. Tu peux ajouter un second secret `ROBLOX_API_KEY_PRODUCTION` pour utiliser une clé différente sur le vrai jeu.
+In your game repository: *Settings → Secrets and variables → Actions → Secrets tab → New repository secret*, name **`ROBLOX_API_KEY`**, value = your Roblox key. That's it. You can add a second secret `ROBLOX_API_KEY_PRODUCTION` to use a different key on the live game.
 
-Le workflow généré fonctionne avec un dépôt **privé** et un compte GitHub **gratuit** :
+The generated workflow works with a **private** repository and a **free** GitHub account:
 
-| Événement | Action |
+| Event | Action |
 |---|---|
-| Pull request | build + vérifications (`--dry-run`), rien n'est publié |
-| Push sur `main` | build + vérifications, rien n'est publié |
-| Push sur `develop` | publication automatique sur le jeu de **test** (`staging`) |
-| Bouton *Run workflow* | publication sur le **vrai jeu** (ou le staging), avec les options au choix |
+| Pull request | build + checks (`--dry-run`), nothing is published |
+| Push to `main` | build + checks, nothing is published |
+| Push to `develop` | automatic publish to the **test** game (`staging`) |
+| *Run workflow* button | publish to the **live game** (or staging), with the options of your choice |
 
-Le vrai jeu ne se met donc **jamais à jour tout seul** : c'est toi qui valides en cliquant.
+The live game therefore **never updates on its own**: you approve by clicking.
 
-**Publier sur le vrai jeu :**
+**Publishing to the live game:**
 
-1. Pousse ton code sur `main` et attends la coche verte ✔ dans l'onglet *Actions* (le build fonctionne).
-2. Onglet *Actions* → *Déploiement Roblox* dans la colonne de gauche → bouton *Run workflow* à droite.
-3. *Use workflow from* : `main` ; *Où publier* : `production` → *Run workflow*.
+1. Push your code to `main` and wait for the green check ✔ in the *Actions* tab (the build works).
+2. *Actions* tab → *Roblox Deploy* in the left column → *Run workflow* button on the right.
+3. *Use workflow from*: `main`; *Where to publish*: `production` → *Run workflow*.
 
-Une minute ou deux plus tard, le jeu est à jour. Seules les personnes qui ont un accès en écriture au dépôt voient ce bouton. La production refuse de partir d'une autre branche que `main`.
+A minute or two later, the game is up to date. Only people with write access to the repository see this button. Production refuses to run from any branch other than `main`.
 
-Deux publications sur la même cible ne tournent jamais en même temps, et le fichier publié est conservé 30 jours en artefact.
+Two publishes to the same target never run at the same time, and the published file is kept for 30 days as an artifact.
 
-> Dépôt **public** (ou offre GitHub Enterprise) : tu peux aussi utiliser les *Environments* de GitHub avec *Required reviewers* pour une validation par bouton « Approve ». Sur un dépôt privé en offre gratuite, ces options ne sont pas disponibles, d'où le fonctionnement ci-dessus.
+> **Public** repository (or GitHub Enterprise plan): you can also use GitHub *Environments* with *Required reviewers* for an "Approve" button validation. On a private repository on the free plan, these options are not available, hence the behaviour described above.
 
-## Le fichier `robops.toml`
+## The `robops.toml` file
 
 ```toml
 api_key_env = "ROBLOX_API_KEY"
@@ -187,45 +187,45 @@ command = "rojo build default.project.json --output build/game.rbxl"
 
 [environments.production]
 universe_id = 1234567890
-version_type = "Published"     # ou "Saved" (sauvegardé, pas joué)
+version_type = "Published"     # or "Saved" (saved, not played)
 restart_servers = false
 
 [[environments.production.places]]
 name = "main"
 place_id = 9876543210
 file = "build/game.rbxl"
-display_name = "Mon jeu"       # optionnel
-server_size = 30               # optionnel
+display_name = "My game"       # optional
+server_size = 30               # optional
 
-[[environments.production.datastores]]   # écrit seulement avec --with-datastores
+[[environments.production.datastores]]   # only written with --with-datastores
 name = "GameConfig"
-file = "data/config.production.json"     # { "clé": valeur, ... }
+file = "data/config.production.json"     # { "key": value, ... }
 ```
 
-Toute valeur peut venir de l'environnement : `universe_id = "${ROBLOX_UNIVERSE_ID}"` ou `"${ROBLOX_UNIVERSE_ID:-123}"` avec valeur par défaut. Les variables ne sont résolues que pour l'environnement déployé.
+Any value can come from the environment: `universe_id = "${ROBLOX_UNIVERSE_ID}"` or `"${ROBLOX_UNIVERSE_ID:-123}"` with a default value. Variables are only resolved for the environment being deployed.
 
-## Commandes
+## Commands
 
 ```bash
-# Déploiement complet d'un environnement
+# Full deployment of an environment
 robops deploy staging
 robops deploy production --with-datastores --restart
 robops deploy production --place lobby --version-type Saved
 robops deploy staging --dry-run
 
-# Publication ponctuelle d'un fichier
+# One-off publish of a file
 robops publish build/game.rbxl --env staging
 robops publish game.rbxlx --universe-id 123 --place-id 456 --version-type Saved
 
-# Places et serveurs
+# Places and servers
 robops place get --env production
-robops place update --env production --name "Mon jeu" --server-size 30
+robops place update --env production --name "My game" --server-size 30
 robops servers restart --env production
 
-# DataStores (alias : robops ds)
-robops ds stores --env production                  # liste les DataStores du jeu
+# DataStores (alias: robops ds)
+robops ds stores --env production                  # lists the game's DataStores
 robops ds get GameConfig motd --env production
-robops ds set GameConfig motd --value '"Double XP ce week-end !"' --env production
+robops ds set GameConfig motd --value '"Double XP this weekend!"' --env production
 robops ds list PlayerData --prefix user_ --env staging
 robops ds export GameConfig --out backup.json --env production
 robops ds import GameConfig data/config.json --env production --dry-run
@@ -233,85 +233,85 @@ robops ds delete GameConfig old_key --env staging
 robops ds snapshot --env production
 ```
 
-Codes de sortie : `0` succès, `1` échec Roblox/déploiement, `2` erreur de configuration ou d'usage.
+Exit codes: `0` success, `1` Roblox/deployment failure, `2` configuration or usage error.
 
-La clé API n'est **jamais** passée en argument (elle apparaîtrait dans les logs) : elle est lue dans la variable indiquée par `api_key_env`.
+The API key is **never** passed as an argument (it would show up in logs): it is read from the variable named by `api_key_env`.
 
-## Données joueurs (ProfileStore / DataService)
+## Player data (ProfileStore / DataService)
 
-Les commandes `robops player …` comprennent le format de **ProfileStore**, utilisé par le DataService de leifstout (et compatible avec ProfileService). Par défaut elles visent le DataStore `Default` avec des clés `PLAYER_<UserId>`, les valeurs par défaut de DataService. Si ton `DataService:init` passe `profileStoreIndex` ou `profileStoreDataPrefix`, recopie-les dans la section `[players]` de `robops.toml` (ou utilise `--datastore` / `--prefix`).
+The `robops player …` commands understand the **ProfileStore** format, used by leifstout's DataService (and compatible with ProfileService). By default they target the `Default` DataStore with `PLAYER_<UserId>` keys, DataService's default values. If your `DataService:init` passes `profileStoreIndex` or `profileStoreDataPrefix`, copy them into the `[players]` section of `robops.toml` (or use `--datastore` / `--prefix`).
 
 ```bash
-# Voir un joueur (Data sur stdout, état de session sur stderr)
+# View a player (Data on stdout, session state on stderr)
 robops player get 123456 --env production
-robops player get 123456 --env production --raw          # profil complet
+robops player get 123456 --env production --raw          # full profile
 
-# Sauvegarder tous les joueurs (.json.gz pour compresser)
+# Back up all players (.json.gz to compress)
 robops player backup --out backups/players-2026-10-15.json.gz --env production
 
-# Restaurer un joueur depuis un backup
+# Restore a player from a backup
 robops player restore 123456 --from backups/players-2026-10-15.json.gz --env production --dry-run
 robops player restore 123456 --from backups/players-2026-10-15.json.gz --env production
 
-# Corriger un joueur hors ligne
+# Fix an offline player
 robops player edit 123456 --set coins=500 --set stats.level=10 --env production
 robops player edit 123456 --set 'inventory=["sword","shield"]' --unset tempFlag --env production
 
-# Catastrophe : tout le monde revient à l'état du backup
+# Disaster: everyone goes back to the backup state
 robops player restore --all --from backups/players-2026-10-15.json.gz --env production --dry-run
 robops player restore --all --from backups/players-2026-10-15.json.gz --env production --yes
 
-# Demande d'effacement de données (droit à l'oubli)
+# Data erasure request (right to be forgotten)
 robops player delete 123456 --env production --yes
 ```
 
-Protections intégrées :
+Built-in protections:
 
-- **Joueur en ligne = écriture refusée.** Le profil porte un verrou (`MetaData.ActiveSession`) tant qu'un serveur le possède. Ce serveur sauvegarde toutes les 5 minutes et écraserait la modification. Pour corriger un joueur connecté, passe par une commande admin dans le jeu.
-- **Verrou périmé = retiré.** Si la dernière sauvegarde date de plus de 630 s (le seuil de ProfileStore), le serveur est considéré comme planté et le verrou est retiré à l'écriture.
-- **Seul `Data` est remplacé.** `MetaData` (compteurs), `GlobalUpdates` (messages en attente), `UserIds` et les métadonnées Roblox de l'entrée sont conservés.
-- **Écriture conditionnelle (etag).** Si le joueur se connecte entre la lecture et l'écriture, Roblox refuse la mise à jour et rien n'est écrit.
-- **Copie de sécurité locale.** Avant chaque écriture ou suppression, l'ancien profil est copié dans `.robops/safety/`.
-- **`--all` exige `--yes`**, et les joueurs en ligne sont ignorés (et listés) au lieu de bloquer toute la restauration.
+- **Player online = write refused.** The profile carries a lock (`MetaData.ActiveSession`) while a server owns it. That server saves every 5 minutes and would overwrite the change. To fix a connected player, use an admin command in the game.
+- **Stale lock = removed.** If the last save is older than 630 s (ProfileStore's threshold), the server is considered crashed and the lock is removed on write.
+- **Only `Data` is replaced.** `MetaData` (counters), `GlobalUpdates` (pending messages), `UserIds` and the entry's Roblox metadata are kept.
+- **Conditional write (etag).** If the player joins between the read and the write, Roblox refuses the update and nothing is written.
+- **Local safety copy.** Before every write or deletion, the old profile is copied to `.robops/safety/`.
+- **`--all` requires `--yes`**, and online players are skipped (and listed) instead of blocking the whole restore.
 
-Si le backup ne trouve aucun joueur alors que le DataStore contient des clés, robops affiche des exemples et la valeur de `key_prefix` à mettre dans `[players]`. Le backup est écrit au fil de l'eau avec 4 lectures en parallèle (`--workers`, jusqu'à 16) ; le fichier n'apparaît qu'une fois complet. Il accepte aussi les exports faits avec `robops ds export`.
+If the backup finds no player while the DataStore contains keys, robops prints examples and the `key_prefix` value to put in `[players]`. The backup is written as it goes with 4 parallel reads (`--workers`, up to 16); the file only appears once complete. It also accepts exports made with `robops ds export`.
 
-> ⚠️ Les backups et les copies de sécurité contiennent des **données personnelles de joueurs**. `robops init` ajoute `.robops/` et `backups/` au `.gitignore` : ne les committe jamais, surtout dans un dépôt public.
+> ⚠️ Backups and safety copies contain players' **personal data**. `robops init` adds `.robops/` and `backups/` to `.gitignore`: never commit them, especially in a public repository.
 
-Si `useMock` est activé dans DataService (tests dans Studio), ces données ne sont jamais écrites dans un DataStore : il n'y a rien à sauvegarder.
+If `useMock` is enabled in DataService (tests in Studio), that data is never written to a DataStore: there is nothing to back up.
 
-### Backup automatique sur GitHub
+### Automatic backup on GitHub
 
-Le workflow `.github/workflows/roblox-backup.yml` (créé par `robops init`) sauvegarde tous les profils **chaque nuit** à 02:17 UTC, et à la demande via *Actions → Backup des joueurs → Run workflow*. Il utilise le même secret `ROBLOX_API_KEY` ; la clé doit avoir, pour `universe-datastores`, la liste des clés et la lecture des entrées.
+The `.github/workflows/roblox-backup.yml` workflow (created by `robops init`) backs up all profiles **every night** at 02:17 UTC, and on demand via *Actions → Player Backup → Run workflow*. It uses the same `ROBLOX_API_KEY` secret; the key must have, for `universe-datastores`, the permission to list keys and read entries.
 
-Chaque backup est gardé **30 jours** comme artefact du run : *Actions → Backup des joueurs → clique sur un run → section Artifacts → télécharger*. Seules les personnes ayant accès au dépôt peuvent le télécharger. Pour restaurer, décompresse le .zip téléchargé puis :
+Each backup is kept **30 days** as a run artifact: *Actions → Player Backup → click a run → Artifacts section → download*. Only people with access to the repository can download it. To restore, unzip the downloaded .zip then:
 
 ```bash
-robops player restore 123456 --from joueurs-production-2026-10-15_0217Z.json.gz --env production
+robops player restore 123456 --from players-production-2026-10-15_0217Z.json.gz --env production
 ```
 
-Bon à savoir : les tâches planifiées ne tournent que depuis la branche par défaut (`main`) et peuvent être retardées quand GitHub est chargé ; en cas d'échec, GitHub prévient par e-mail la personne qui a modifié la ligne `cron` en dernier. Dans un dépôt **public**, GitHub les désactive après 60 jours sans activité. Chaque backup consomme environ une minute du quota GitHub Actions (2 000 min/mois en gratuit pour un dépôt privé) et un peu de stockage d'artefacts (500 Mo en gratuit) : réduis `retention-days` si ton jeu a beaucoup de joueurs.
+Good to know: scheduled tasks only run from the default branch (`main`) and can be delayed when GitHub is busy; on failure, GitHub emails whoever last modified the `cron` line. In a **public** repository, GitHub disables them after 60 days without activity. Each backup uses about one minute of the GitHub Actions quota (2,000 min/month on the free plan for a private repository) and a bit of artifact storage (500 MB on the free plan): reduce `retention-days` if your game has many players.
 
-## Revenir en arrière
+## Rolling back
 
-Relance le workflow manuellement sur le commit précédent (ou un tag), ou republie l'artefact conservé :
+Re-run the workflow manually on the previous commit (or a tag), or republish the kept artifact:
 
 ```bash
 robops publish place-production-<sha>/game.rbxl --env production
 robops servers restart --env production
 ```
 
-Pour les données, chaque déploiement avec `--with-datastores` prend d'abord un snapshot : les valeurs précédentes restent récupérables pendant 30 jours via l'historique des révisions.
+For data, every deployment with `--with-datastores` takes a snapshot first: previous values remain recoverable for 30 days through the revision history.
 
-## Limites à connaître
+## Limitations to know about
 
-- L'API de publication **ne met pas à jour** certains types d'instances : `EditableImage`, `EditableMesh`, `PartOperation` (unions), `SurfaceAppearance`, `BaseWrap`. Si tu les modifies, publie une fois depuis Studio.
-- La mise à jour des métadonnées échoue (409) si une session **Team Create** est ouverte sur la place : c'est un avertissement, pas un échec (sauf avec `--strict-metadata`).
-- La publication est limitée à environ **30 requêtes par minute** par propriétaire de clé.
-- Un seul snapshot de DataStores par jour UTC ; les suivants sont sans effet.
-- Écraser une entrée de DataStore efface ses `users` et `attributes` côté Roblox : `robops` les relit et les renvoie automatiquement (désactivable avec `--clear-metadata`).
+- The publishing API **does not update** certain instance types: `EditableImage`, `EditableMesh`, `PartOperation` (unions), `SurfaceAppearance`, `BaseWrap`. If you change them, publish once from Studio.
+- The metadata update fails (409) if a **Team Create** session is open on the place: this is a warning, not a failure (except with `--strict-metadata`).
+- Publishing is limited to about **30 requests per minute** per key owner.
+- Only one DataStores snapshot per UTC day; later ones have no effect.
+- Overwriting a DataStore entry erases its `users` and `attributes` on Roblox's side: `robops` reads them back and sends them again automatically (can be disabled with `--clear-metadata`).
 
-## Développement
+## Development
 
 ```bash
 pip install -e ".[dev]"

@@ -1,4 +1,4 @@
-"""Point d'entrée de robops-setup.exe (compilé par PyInstaller dans release.yml)."""
+"""Entry point of robops-setup.exe (compiled by PyInstaller in release.yml)."""
 
 import sys
 

@@ -1,4 +1,4 @@
-# Tests de l'outil robops lui-même (pas de déploiement).
+# Tests of the robops tool itself (no deployment).
 name: CI robops
 
 on:

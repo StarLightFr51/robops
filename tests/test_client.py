@@ -68,7 +68,7 @@ def test_403_raises_with_scope_and_hint(make_client, tmp_path):
     assert err.value.status == 403
     assert "Publish not allowed" in text
     assert "universe-places:write" in text
-    assert "Permission manquante" in text
+    assert "Missing permission" in text
 
 
 def test_gives_up_after_max_retries(make_client):

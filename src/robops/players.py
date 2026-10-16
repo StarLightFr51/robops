@@ -1,30 +1,30 @@
-"""Données joueurs gérées par ProfileStore (DataService de leifstout, ProfileService…).
+"""Player data managed by ProfileStore (leifstout's DataService, ProfileService…).
 
-Chaque joueur est une entrée de DataStore dont la valeur a cette forme :
+Each player is a DataStore entry whose value has this shape:
 
     {
-      "Data": { ...les données du jeu... },
+      "Data": { ...the game data... },
       "MetaData": {
         "ProfileCreateTime": 1700000000,
         "SessionLoadCount": 42,
-        "ActiveSession": [placeId, "jobId", "guid"] | null,   <- verrou de session
+        "ActiveSession": [placeId, "jobId", "guid"] | null,   <- session lock
         "ForceLoadSession": [...] | null,
-        "LastUpdate": 1700000123,                             <- dernière sauvegarde (os.time)
+        "LastUpdate": 1700000123,                             <- last save (os.time)
         "MetaTags": {}
       },
       "UserIds": [...], "RobloxMetaData": {...}, "GlobalUpdates": [...]
     }
 
-Règles appliquées ici :
-  * on n'écrit jamais sur un profil verrouillé par un serveur vivant : il
-    écraserait la modification à sa prochaine sauvegarde automatique ;
-  * un verrou dont la dernière sauvegarde a plus de ASSUME_DEAD_SECONDS est
-    celui d'un serveur planté (ProfileStore le considère mort aussi) ;
-  * à l'écriture, on ne remplace que `Data` et on retire le verrou, tout le
-    reste (compteurs, GlobalUpdates, UserIds…) est conservé ;
-  * l'écriture est conditionnée à l'etag lu juste avant : si le joueur se
-    connecte entre la lecture et l'écriture, Roblox refuse la mise à jour ;
-  * l'état actuel du profil est copié dans un fichier local avant toute écriture.
+Rules applied here:
+  * we never write to a profile locked by a live server: it would overwrite
+    the change on its next autosave;
+  * a lock whose last save is older than ASSUME_DEAD_SECONDS belongs to a
+    crashed server (ProfileStore considers it dead too);
+  * when writing, only `Data` is replaced and the lock is removed; everything
+    else (counters, GlobalUpdates, UserIds…) is kept;
+  * the write is conditioned on the etag read just before: if the player
+    joins between the read and the write, Roblox refuses the update;
+  * the profile's current state is copied to a local file before any write.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from typing import Any, Callable, Iterable, Iterator
 
 from .client import OpenCloudClient, RobloxApiError
 
-ASSUME_DEAD_SECONDS = 630      # même seuil que ProfileStore (ASSUME_DEAD)
+ASSUME_DEAD_SECONDS = 630      # same threshold as ProfileStore (ASSUME_DEAD)
 BACKUP_FORMAT = "robops-players/1"
 
 
@@ -52,11 +52,11 @@ class PlayerError(Exception):
 
 @dataclass
 class PlayersConfig:
-    """Où DataService range les profils (options profileStoreIndex / profileStoreDataPrefix).
+    """Where DataService keeps the profiles (profileStoreIndex / profileStoreDataPrefix options).
 
-    ProfileStore ouvre ses DataStores sans scope (GetDataStore(nom, nil)) : les profils
-    sont donc dans le scope par défaut de Roblox, « global ». On le cible explicitement,
-    car un accès sans scope via Open Cloud ne retrouve pas toujours ces entrées.
+    ProfileStore opens its DataStores without a scope (GetDataStore(name, nil)): profiles
+    are therefore in Roblox's default scope, "global". We target it explicitly,
+    because an access without a scope through Open Cloud does not always find these entries.
     """
 
     datastore: str = "Default"
@@ -80,7 +80,7 @@ class SessionState:
         return self.status != "online"
 
 
-# ------------------------------------------------------------------ lecture
+# ------------------------------------------------------------------ reading
 
 def is_profile(value: Any) -> bool:
     return isinstance(value, dict) and "Data" in value and isinstance(value.get("MetaData"), dict)
@@ -94,23 +94,23 @@ def session_state(profile: dict, now: float | None = None) -> SessionState:
     age = None
     if isinstance(last, (int, float)) and last > 0:
         age = max(0, int(now - last))
-    age_txt = f"dernière sauvegarde il y a {_duration(age)}" if age is not None else "date de sauvegarde inconnue"
+    age_txt = f"last save {_duration(age)} ago" if age is not None else "last save time unknown"
 
     if not session:
-        return SessionState("offline", f"hors ligne ({age_txt})")
+        return SessionState("offline", f"offline ({age_txt})")
     where = _session_label(session)
     if age is None:
-        # Sans date fiable, on reste prudent : on considère le verrou actif.
-        return SessionState("online", f"verrouillé par {where}, {age_txt}")
+        # Without a reliable date we stay cautious: we treat the lock as active.
+        return SessionState("online", f"locked by {where}, {age_txt}")
     if age >= ASSUME_DEAD_SECONDS:
-        return SessionState("stale", f"verrou périmé, {where} ne répond plus (arrêté ou planté, {age_txt})")
-    return SessionState("online", f"en ligne sur {where}, {age_txt}")
+        return SessionState("stale", f"stale lock, {where} is no longer responding (stopped or crashed, {age_txt})")
+    return SessionState("online", f"online on {where}, {age_txt}")
 
 
 def _session_label(session: Any) -> str:
     if isinstance(session, list) and len(session) >= 2:
-        return f"le serveur {session[1]} (place {session[0]})"
-    return "un serveur"
+        return f"server {session[1]} (place {session[0]})"
+    return "a server"
 
 
 def _duration(seconds: int | None) -> str:
@@ -122,7 +122,7 @@ def _duration(seconds: int | None) -> str:
         return f"{seconds // 60} min"
     if seconds < 86400:
         return f"{seconds // 3600} h {seconds % 3600 // 60:02d}"
-    return f"{seconds // 86400} j"
+    return f"{seconds // 86400} d"
 
 
 @dataclass
@@ -153,7 +153,7 @@ def fetch_profile(client: OpenCloudClient, universe_id: int, cfg: PlayersConfig,
 # ------------------------------------------------------------- modification
 
 def unlocked(profile: dict) -> dict:
-    """Copie du profil sans verrou de session (ActiveSession / ForceLoadSession)."""
+    """Copy of the profile without the session lock (ActiveSession / ForceLoadSession)."""
     result = copy.deepcopy(profile)
     meta = result.setdefault("MetaData", {})
     meta["ActiveSession"] = None
@@ -162,17 +162,17 @@ def unlocked(profile: dict) -> dict:
 
 
 def with_data(current: Any, new_data: Any, fallback_profile: dict | None = None) -> dict:
-    """Profil à écrire : le profil actuel avec `Data` remplacé et le verrou retiré.
+    """Profile to write: the current profile with `Data` replaced and the lock removed.
 
-    Si le joueur n'a plus de profil (ou un profil illisible), on repart du
-    profil de secours (celui du backup).
+    If the player no longer has a profile (or has an unreadable one), we start
+    from the fallback profile (the one from the backup).
     """
     if is_profile(current):
         base = current
     elif fallback_profile is not None and is_profile(fallback_profile):
         base = fallback_profile
     else:
-        raise PlayerError("Aucun profil ProfileStore valide sur lequel écrire.")
+        raise PlayerError("No valid ProfileStore profile to write to.")
     result = unlocked(base)
     result["Data"] = copy.deepcopy(new_data)
     return result
@@ -186,15 +186,15 @@ def parse_value(text: str) -> Any:
 
 
 def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ()) -> Any:
-    """Applique des modifications `chemin.vers.champ=valeur` sur une copie de Data."""
+    """Applies `path.to.field=value` edits to a copy of Data."""
     result = copy.deepcopy(data) if isinstance(data, dict) else {}
     for item in sets:
         if "=" not in item:
-            raise PlayerError(f"--set attend chemin=valeur (reçu : {item!r}).")
+            raise PlayerError(f"--set expects path=value (got: {item!r}).")
         path, raw = item.split("=", 1)
         parts = [p for p in path.strip().split(".") if p]
         if not parts:
-            raise PlayerError(f"Chemin vide dans --set {item!r}.")
+            raise PlayerError(f"Empty path in --set {item!r}.")
         node = result
         for part in parts[:-1]:
             child = node.get(part)
@@ -216,7 +216,7 @@ def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ())
 
 
 def changed_fields(before: Any, after: Any, prefix: str = "") -> list[str]:
-    """Liste lisible des champs de Data qui changent (sur deux niveaux)."""
+    """Readable list of the Data fields that change (two levels deep)."""
     if not isinstance(before, dict) or not isinstance(after, dict):
         return [prefix or "Data"] if before != after else []
     changes: list[str] = []
@@ -235,14 +235,14 @@ def changed_fields(before: Any, after: Any, prefix: str = "") -> list[str]:
 
 
 def save_safety_copy(directory: Path, cfg: PlayersConfig, user_id: str, current: CurrentProfile) -> Path | None:
-    """Sauvegarde locale du profil avant écriture, pour pouvoir annuler."""
+    """Local copy of the profile before writing, so the change can be undone."""
     if not current.exists:
         return None
     directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = directory / f"{cfg.key(user_id)}-{stamp}.json"
     n = 2
-    while path.exists():  # deux écritures dans la même seconde : ne jamais écraser une copie
+    while path.exists():  # two writes in the same second: never overwrite a copy
         path = directory / f"{cfg.key(user_id)}-{stamp}-{n}.json"
         n += 1
     path.write_text(
@@ -263,7 +263,7 @@ def write_profile(
     *,
     users: list[str] | None = None,
 ) -> dict:
-    """Écrit le profil, conditionné à l'etag lu (refus si le profil a bougé entre-temps)."""
+    """Writes the profile, conditioned on the etag that was read (refused if the profile moved in the meantime)."""
     try:
         return client.set_entry(
             universe_id,
@@ -278,8 +278,8 @@ def write_profile(
     except RobloxApiError as exc:
         if exc.status in (409, 412) or (exc.status == 400 and "etag" in exc.message.lower()):
             raise PlayerError(
-                f"Le profil de {user_id} a changé entre la lecture et l'écriture "
-                "(le joueur vient peut-être de se connecter). Rien n'a été écrit : relance la commande."
+                f"The profile of {user_id} changed between the read and the write "
+                "(the player may have just joined). Nothing was written: run the command again."
             ) from exc
         raise
 
@@ -308,16 +308,16 @@ class BackupResult:
     path: Path
     count: int
     errors: dict[str, str]
-    other_keys: int = 0                 # clés du DataStore qui ne commencent pas par le préfixe
+    other_keys: int = 0                 # DataStore keys that don't start with the prefix
     other_examples: list[str] | None = None
 
 
 def split_scoped(raw_id: str, scope: str | None) -> tuple[str | None, str]:
-    """Sépare un identifiant renvoyé par la liste Open Cloud en (scope, clé).
+    """Splits an identifier returned by the Open Cloud list into (scope, key).
 
-    Selon la requête, l'API renvoie « PLAYER_123 » ou « global/PLAYER_123 »
-    (scope préfixé). Une clé contenant « / » n'est découpée que si la partie
-    avant le « / » correspond au scope demandé, ou si aucun scope n'est demandé.
+    Depending on the request, the API returns "PLAYER_123" or "global/PLAYER_123"
+    (scope-prefixed). A key containing "/" is only split if the part before
+    the "/" matches the requested scope, or if no scope was requested.
     """
     if "/" in raw_id:
         head, tail = raw_id.split("/", 1)
@@ -327,12 +327,12 @@ def split_scoped(raw_id: str, scope: str | None) -> tuple[str | None, str]:
 
 
 def guess_prefix(keys: Iterable[str]) -> str | None:
-    """Devine le préfixe de clés du type <préfixe><UserId> (ex. 'Player_123' → 'Player_')."""
+    """Guesses the key prefix of the form <prefix><UserId> (e.g. 'Player_123' → 'Player_')."""
     counts: dict[str, int] = {}
     for raw in keys:
         key = split_scoped(raw, None)[1]
         stripped = key.rstrip("0123456789")
-        if stripped != key:                      # la clé se termine bien par un nombre
+        if stripped != key:                      # the key does end with a number
             counts[stripped] = counts.get(stripped, 0) + 1
     return max(counts, key=counts.get) if counts else None
 
@@ -347,9 +347,9 @@ def backup_players(
     workers: int = 4,
     progress: Callable[[int], None] | None = None,
 ) -> BackupResult:
-    """Exporte tous les profils dans un JSON (ou .json.gz), écrit au fil de l'eau.
+    """Exports all the profiles to a JSON (or .json.gz), written as it goes.
 
-    Le fichier final n'apparaît qu'une fois complet (écriture dans un .tmp puis renommage).
+    The final file only appears once complete (written to a .tmp then renamed).
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -375,8 +375,8 @@ def backup_players(
         "key_prefix": cfg.key_prefix,
         "scope": cfg.scope,
     }
-    # Filtrage du préfixe côté robops (et non par l'API) : on peut ainsi signaler
-    # les clés qui ne correspondent pas, pour aider à corriger la configuration.
+    # The prefix is filtered by robops (not by the API): this way we can report
+    # the keys that don't match, to help fix the configuration.
     others: list[str] = []
     other_count = 0
 
@@ -416,26 +416,26 @@ def backup_players(
 
 
 def load_backup(path: Path, cfg: PlayersConfig) -> dict[str, dict]:
-    """Charge un backup → {user_id: {"value": profil, "users": [...]}}.
+    """Loads a backup → {user_id: {"value": profile, "users": [...]}}.
 
-    Accepte le format de `robops player backup` et celui de `robops ds export`
-    ({"PLAYER_123": profil, ...}).
+    Accepts the format of `robops player backup` and that of `robops ds export`
+    ({"PLAYER_123": profile, ...}).
     """
     path = Path(path)
     if not path.is_file():
-        raise PlayerError(f"Backup introuvable : {path}")
+        raise PlayerError(f"Backup not found: {path}")
     try:
         with _open_text(path, "r") as fh:
             raw = json.load(fh)
     except (json.JSONDecodeError, OSError) as exc:
-        raise PlayerError(f"{path} n'est pas un backup lisible : {exc}") from exc
+        raise PlayerError(f"{path} is not a readable backup: {exc}") from exc
     if isinstance(raw, dict) and raw.get("format") == BACKUP_FORMAT:
         if raw.get("datastore") != cfg.datastore or raw.get("key_prefix") != cfg.key_prefix:
             raise PlayerError(
-                f"Ce backup vient de {raw.get('datastore')}/{raw.get('key_prefix')}* "
-                f"mais la cible est {cfg.datastore}/{cfg.key_prefix}* : vérifie la config [players]."
+                f"This backup comes from {raw.get('datastore')}/{raw.get('key_prefix')}* "
+                f"but the target is {cfg.datastore}/{cfg.key_prefix}*: check the [players] config."
             )
         return raw.get("profiles") or {}
     if isinstance(raw, dict):
         return {cfg.user_id(k): {"value": v, "users": []} for k, v in raw.items() if k.startswith(cfg.key_prefix)}
-    raise PlayerError(f"{path} : format de backup non reconnu.")
+    raise PlayerError(f"{path}: unrecognized backup format.")
