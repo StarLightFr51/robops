@@ -756,7 +756,6 @@ function viewData(view) {
 
 const dayFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
 const dayLabel = (iso) => dayFmt.format(new Date(`${iso}T12:00:00Z`));
-const bytes = (v) => size(Math.round(v));
 const whole = (v) => fmt(Math.round(v));          // averages over long periods stay readable
 
 /* A chart card: title, one-line note, the chart, its legend and its table view. */
@@ -904,7 +903,7 @@ function drawDeployCharts(section) {
         (el) => RobopsCharts.columns(el, { label: "Runs per week", bars: weeks, series }),
         [RobopsCharts.legend(series), RobopsCharts.table(["Week", "Succeeded", "Failed", "Other"], d.weeks.map((w) => [w.week, w.success, w.failure, w.other + w.running]))]),
       done.length ? chartCard("Duration of each run", "Minutes from start to end, oldest on the left.",
-        (el) => RobopsCharts.columns(el, { label: "Duration of each run", format: (v) => `${v.toFixed(1)} min`,
+        (el) => RobopsCharts.columns(el, { label: "Duration of each run", format: (v) => `${+v.toFixed(1)} min`,
           bars: done.map((x) => ({ label: `#${x.number}`, value: x.minutes, tip: `Run #${x.number}, ${resultText[x.result]}, ${when(x.created_at)}` })) }),
         [RobopsCharts.table(["Run", "Minutes"], done.map((x) => [`#${x.number} (${resultText[x.result]})`, x.minutes]))]) : emptyCard("Duration of each run", "No finished run yet."),
     );
@@ -920,9 +919,12 @@ function drawBackupCharts(section) {
       .concat(b.local.map((x) => ({ t: x.modified, size: x.size, name: x.id })))
       .sort((x, y) => new Date(x.t) - new Date(y.t));
     if (files.length < 2) { put(cards, emptyCard("Size of each backup", "At least two backups are needed to see a trend.")); return; }
+    // Plotted in KB or MB so the axis steps are round numbers of the unit shown.
+    const big = Math.max(...files.map((f) => f.size));
+    const [unit, div] = big >= 1024 ** 3 ? ["GB", 1024 ** 3] : big >= 1024 ** 2 ? ["MB", 1024 ** 2] : ["KB", 1024];
     put(cards, chartCard("Size of each backup", "Growing size = more players or bigger profiles. GitHub nightly backups and the files of the backups folder.",
-      (el) => RobopsCharts.columns(el, { label: "Size of each backup", format: bytes,
-        bars: files.map((f) => ({ label: dayFmt.format(new Date(f.t)), value: f.size, tip: `${f.name}, ${when(f.t)}` })) }),
+      (el) => RobopsCharts.columns(el, { label: "Size of each backup", format: (v) => `${+v.toFixed(1)} ${unit}`,
+        bars: files.map((f) => ({ label: dayFmt.format(new Date(f.t)), value: f.size / div, tip: `${f.name}, ${when(f.t)}` })) }),
       [RobopsCharts.table(["Backup", "Size"], files.map((f) => [f.name, size(f.size)]))]));
     mountCharts(cards);
   }).catch((err) => put(cards, notice(err.message, true)));
