@@ -280,7 +280,7 @@ Every button opens a confirmation in the environment's colour (production in ora
 
 **Security.** The server only answers on `127.0.0.1`, refuses any other `Host` (DNS rebinding) or foreign `Origin`, and every request must carry the random session key contained in the link printed at startup: another website open in your browser can neither read the data nor press a button. The page loads nothing from the internet except avatars (`rbxcdn.com`). Don't share the link while the dashboard runs.
 
-Options: `--port 9000`, `--no-browser`, `--github-repo owner/name`. Live player counts come from roblox.com's public API; for a multi-place experience, Roblox only counts the players of the start place there.
+Options: `--port 9000`, `--no-browser`, `--github-repo owner/name`, `--deploy-workflow deploy.yml` / `--backup-workflow backup.yml` (by default the workflows created by `robops init` are found even if renamed). If deployments don't show up, the **Setup** view checks the GitHub connection step by step (token, access to the repository, Actions permission, workflows) and says what to fix. Live player counts come from roblox.com's public API; for a multi-place experience, Roblox only counts the players of the start place there.
 
 ## Player data (ProfileStore / DataService)
 

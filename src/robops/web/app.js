@@ -438,11 +438,13 @@ function viewDeployments(view) {
     if (state.view !== "deployments") return;
     if (data.error) {
       put(view, panel("Deployments", null, h("div", { class: "panel-body stack" }, notice(data.error, true),
-        h("p", { text: "Set ROBOPS_GITHUB_TOKEN (a fine-grained token on the game repository with Actions: Read, or Read and write for the Deploy button) in the terminal, then run robops dashboard again." }))));
+        h("p", {}, "The Setup view checks the GitHub connection step by step. ",
+          h("button", { type: "button", class: "btn ghost small", onclick: () => selectView("setup") }, "Open Setup")))));
       return;
     }
     const busy = data.runs.some((r) => r.status !== "completed");
-    put(view, panel("Deployment runs", `Latest runs of Roblox Deploy on ${data.repo}${busy ? ", refreshing while a run is in progress" : ""}.`,
+    const source = data.workflow ? `${data.workflow.name} (${data.workflow.file})` : "the deploy workflow";
+    put(view, panel("Deployment runs", `Latest runs of ${source} on ${data.repo}${busy ? ", refreshing while a run is in progress" : ""}.`,
       data.runs.length ? h("ul", { class: "timeline" }, data.runs.map(runItem)) : h("p", { class: "empty", text: "No run yet. Use Deploy to launch the first one." })));
   });
 }
@@ -762,10 +764,16 @@ function viewSetup(view) {
       h("ul", { class: "findings" }, env.findings.map((f) => h("li", {},
         h("span", { class: `lvl status ${levelClass[f.level]}`, text: levelText[f.level] }), h("span", { class: "msg", text: f.message.trim() }))))));
   }
-  view.append(panel("GitHub", null, h("div", { class: "panel-body" }, h("dl", { class: "kv" },
-    h("dt", { text: "Repository" }), h("dd", { text: s.github.repo || "not found: run the dashboard from your game's Git folder, or pass --github-repo owner/name" }),
-    h("dt", { text: "Token" }), h("dd", { text: s.github.token ? "ROBOPS_GITHUB_TOKEN is set" : "none: deployments and backups are only readable on a public repository, and Deploy / Back up now need a token with Actions: Read and write" }),
-  ))));
+  const ghSteps = h("ul", { class: "findings" }, h("li", { class: "loading", text: "Checking the GitHub connection…" }));
+  const checkGitHub = () => {
+    put(ghSteps, h("li", { class: "loading", text: "Checking the GitHub connection…" }));
+    api("/api/github").then((r) => put(ghSteps, r.steps.map((f) => h("li", {},
+      h("span", { class: `lvl status ${levelClass[f.level]}`, text: levelText[f.level] }), h("span", { class: "msg", text: f.message })))))
+      .catch((err) => put(ghSteps, h("li", { class: "error-text", text: err.message })));
+  };
+  view.append(panel(`GitHub${s.github.repo ? ` (${s.github.repo})` : ""}`,
+    h("button", { type: "button", class: "btn ghost small", onclick: checkGitHub }, "Check again"), ghSteps));
+  checkGitHub();
   view.append(panel("This dashboard", null, h("div", { class: "panel-body" }, h("dl", { class: "kv" },
     h("dt", { text: "Version" }), h("dd", { text: `robops ${s.version}` }),
     h("dt", { text: "Configuration" }), h("dd", { class: "code", text: s.config }),

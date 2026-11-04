@@ -295,3 +295,65 @@ def test_dashboard_command_starts_the_server(tmp_path, monkeypatch, capsys):
 
 def test_profile_helper_shape():
     assert profile({"a": 1})["MetaData"]["ActiveSession"] is None
+
+
+# ------------------------------------------------- GitHub diagnosis (issue: 404)
+
+def _app(tmp_path, monkeypatch, gh, token="t", **kw):
+    monkeypatch.setenv("ROBLOX_API_KEY", "k")
+    app = make_dashboard(tmp_path, gh=gh)
+    app.github_token = token
+    for key, value in kw.items():
+        setattr(app, key, value)
+    return app
+
+
+def test_token_without_access_to_private_repo_says_so(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch, FakeGitHub(fail={"info": 404}))
+    with pytest.raises(dashboard.DashboardError, match="ROBOPS_GITHUB_TOKEN is set, but this token can't see") as err:
+        app.deployments()
+    assert "Repository access must include brick-tycoon" in str(err.value)
+    assert "can't see" in app.backups()["github"]["error"]
+    steps = app.github_status()["steps"]
+    assert [s["level"] for s in steps] == ["ok", "error"]
+
+
+def test_missing_token_on_private_repo_asks_for_it(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch, FakeGitHub(fail={"info": 404}), token=None)
+    with pytest.raises(dashboard.DashboardError, match="without a token"):
+        app.deployments()
+    assert app.github_status()["steps"][0]["level"] == "warn"
+
+
+def test_expired_token_and_missing_actions_permission(tmp_path, monkeypatch):
+    with pytest.raises(dashboard.DashboardError, match="invalid or expired"):
+        _app(tmp_path, monkeypatch, FakeGitHub(fail={"info": 401})).deployments()
+    with pytest.raises(dashboard.DashboardError, match="Actions: Read"):
+        _app(tmp_path, monkeypatch, FakeGitHub(fail={"workflows": 403})).deployments()
+
+
+def test_renamed_workflow_is_detected(tmp_path, monkeypatch):
+    gh = FakeGitHub(workflows=[{"name": "CI", "path": ".github/workflows/ci.yml"},
+                               {"name": "Deploy to Roblox", "path": ".github/workflows/deploy.yml"},
+                               {"name": "Nightly backup", "path": ".github/workflows/backup-players.yml"}])
+    app = _app(tmp_path, monkeypatch, gh)
+    assert app.deployments()["workflow"] == {"file": "deploy.yml", "name": "Deploy to Roblox"}
+    assert gh.runs_of == ["deploy.yml"]
+    app.run_backup({})
+    assert gh.dispatched[-1][0] == "backup-players.yml"
+    assert [s["level"] for s in app.github_status()["steps"]] == ["ok", "ok", "ok", "ok"]
+
+
+def test_no_deploy_workflow_lists_what_exists(tmp_path, monkeypatch):
+    gh = FakeGitHub(workflows=[{"name": "CI", "path": ".github/workflows/ci.yml"}])
+    app = _app(tmp_path, monkeypatch, gh)
+    with pytest.raises(dashboard.DashboardError, match=r"No deploy workflow .* ci\.yml \(CI\).*--deploy-workflow"):
+        app.deployments()
+    forced = _app(tmp_path, monkeypatch, gh, deploy_workflow="ci.yml")
+    assert forced.deployments()["workflow"]["file"] == "ci.yml"
+
+
+def test_github_status_endpoint(server):
+    steps = server.get("/api/github").json()["steps"]
+    assert [s["message"] for s in steps][-2:] == ["Deploy workflow: roblox-deploy.yml (Roblox Deploy).",
+                                                  "Backup workflow: roblox-backup.yml (Player Backup)."]
