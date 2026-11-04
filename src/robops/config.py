@@ -6,6 +6,7 @@ Strings may contain ${VARIABLE} references resolved from the environment
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 import tomllib
@@ -16,6 +17,19 @@ from typing import Any
 from .players import PlayersConfig
 
 DEFAULT_CONFIG = "robops.toml"
+
+# Fields accepted in each table: anything else is a typo that would otherwise be
+# silently ignored (e.g. "restart_server" deploying with the default value).
+ROOT_KEYS = {"api_key_env", "build", "players", "environments"}
+BUILD_KEYS = {"command"}
+ENV_KEYS = {"universe_id", "places", "version_type", "restart_servers", "build_command",
+            "datastores", "api_key_env", "players"}
+PLACE_KEYS = {"name", "place_id", "file", "display_name", "description", "server_size"}
+DATASTORE_KEYS = {"name", "file", "scope"}
+PLAYERS_KEYS = {"datastore", "key_prefix", "scope"}
+
+_TRUE = {"true", "yes", "on", "1"}
+_FALSE = {"false", "no", "off", "0", ""}
 _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
@@ -109,6 +123,46 @@ def _as_int(value: Any, where: str) -> int:
     return number
 
 
+def _as_bool(value: Any, where: str) -> bool:
+    """TOML boolean, or text coming from ${VAR} ("false" must not become True)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in _TRUE | _FALSE:
+        return value.strip().lower() in _TRUE
+    raise ConfigError(f"{where} must be true or false (got: {value!r}).")
+
+
+def _opt_str(value: Any, where: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ConfigError(f"{where} must be text (got: {value!r}).")
+    return value
+
+
+def _check_keys(table: dict, allowed: set[str], where: str) -> None:
+    unknown = sorted(set(table) - allowed)
+    if not unknown:
+        return
+    names = []
+    for key in unknown:
+        close = difflib.get_close_matches(key, allowed, n=1)
+        names.append(f"'{key}'" + (f" (did you mean '{close[0]}'?)" if close else ""))
+    raise ConfigError(f"{where}: unknown field(s) {', '.join(names)}. "
+                      f"Expected: {', '.join(sorted(allowed))}.")
+
+
+def _tables(value: Any, where: str) -> list[dict]:
+    """List of [[tables]] (places, datastores)."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
+        raise ConfigError(f"{where} must be a list of [[{where}]] sections.")
+    return value
+
+
 def _require(table: dict, key: str, where: str) -> Any:
     if key not in table or table[key] in (None, ""):
         raise ConfigError(f"Required field missing: {where}.{key}")
@@ -125,12 +179,23 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
         raise ConfigError(f"{config_path} is not valid TOML: {exc}") from exc
 
     root = config_path.resolve().parent
-    default_key_env = raw.get("api_key_env", "ROBLOX_API_KEY")
-    default_build = (raw.get("build") or {}).get("command")
+    _check_keys(raw, ROOT_KEYS, str(config_path))
+    build = raw.get("build") or {}
+    if not isinstance(build, dict):
+        raise ConfigError("[build] must be a section.")
+    _check_keys(build, BUILD_KEYS, "build")
+    default_key_env = _opt_str(raw.get("api_key_env"), "api_key_env") or "ROBLOX_API_KEY"
+    default_build = _opt_str(build.get("command"), "build.command")
+    players = raw.get("players") or {}
+    if not isinstance(players, dict):
+        raise ConfigError("[players] must be a section.")
 
     envs_raw = raw.get("environments")
     if not isinstance(envs_raw, dict) or not envs_raw:
         raise ConfigError(f"{config_path} must define at least one [environments.<name>] section.")
+    for name, table in envs_raw.items():
+        if not isinstance(table, dict):
+            raise ConfigError(f"environments.{name} must be a [environments.{name}] section.")
 
     return Config(
         path=config_path,
@@ -138,20 +203,21 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
         raw_environments=envs_raw,
         default_key_env=default_key_env,
         default_build=default_build,
-        default_players=raw.get("players") or {},
+        default_players=players,
     )
 
 
 def _parse_environment(cfg: Config, env_name: str, env_raw: dict) -> Environment:
     root = cfg.root
     where = f"environments.{env_name}"
+    _check_keys(env_raw, ENV_KEYS, where)
     env_raw = _expand(env_raw, where)
 
     version_type = env_raw.get("version_type", "Published")
     if version_type not in ("Published", "Saved"):
         raise ConfigError(f"{where}.version_type must be 'Published' or 'Saved'.")
 
-    places_raw = env_raw.get("places") or []
+    places_raw = _tables(env_raw.get("places"), f"{where}.places")
     if not places_raw:
         raise ConfigError(f"{where} must declare at least one [[{where}.places]].")
 
@@ -159,6 +225,7 @@ def _parse_environment(cfg: Config, env_name: str, env_raw: dict) -> Environment
     seen: set[str] = set()
     for i, p in enumerate(places_raw):
         pw = f"{where}.places[{i}]"
+        _check_keys(p, PLACE_KEYS, pw)
         name = str(p.get("name") or f"place{i + 1}")
         if name in seen:
             raise ConfigError(f"{pw}: duplicate place name '{name}'.")
@@ -169,41 +236,43 @@ def _parse_environment(cfg: Config, env_name: str, env_raw: dict) -> Environment
                 name=name,
                 place_id=_as_int(_require(p, "place_id", pw), f"{pw}.place_id"),
                 file=(root / str(_require(p, "file", pw))).resolve(),
-                display_name=p.get("display_name"),
-                description=p.get("description"),
+                display_name=_opt_str(p.get("display_name"), f"{pw}.display_name"),
+                description=_opt_str(p.get("description"), f"{pw}.description"),
                 server_size=_as_int(server_size, f"{pw}.server_size") if server_size is not None else None,
             )
         )
 
-    seeds = [
-        DatastoreSeed(
-            name=str(_require(d, "name", f"{where}.datastores[{i}]")),
-            file=(root / str(_require(d, "file", f"{where}.datastores[{i}]"))).resolve(),
-            scope=d.get("scope"),
-        )
-        for i, d in enumerate(env_raw.get("datastores") or [])
-    ]
+    seeds = []
+    for i, d in enumerate(_tables(env_raw.get("datastores"), f"{where}.datastores")):
+        dw = f"{where}.datastores[{i}]"
+        _check_keys(d, DATASTORE_KEYS, dw)
+        seeds.append(DatastoreSeed(
+            name=str(_require(d, "name", dw)),
+            file=(root / str(_require(d, "file", dw))).resolve(),
+            scope=_opt_str(d.get("scope"), f"{dw}.scope") or None,
+        ))
 
     return Environment(
         name=env_name,
         universe_id=_as_int(_require(env_raw, "universe_id", where), f"{where}.universe_id"),
         places=places,
         version_type=version_type,
-        restart_servers=bool(env_raw.get("restart_servers", False)),
-        build_command=env_raw.get("build_command", cfg.default_build),
+        restart_servers=_as_bool(env_raw.get("restart_servers", False), f"{where}.restart_servers"),
+        build_command=_opt_str(env_raw.get("build_command", cfg.default_build), f"{where}.build_command"),
         datastores=seeds,
-        api_key_env=env_raw.get("api_key_env", cfg.default_key_env),
-        players=_parse_players({**cfg.default_players, **(env_raw.get("players") or {})}, f"{where}.players"),
+        api_key_env=_opt_str(env_raw.get("api_key_env"), f"{where}.api_key_env") or cfg.default_key_env,
+        players=_parse_players(cfg.default_players, env_raw.get("players") or {}, f"{where}.players"),
     )
 
 
-def _parse_players(raw: dict, where: str) -> PlayersConfig:
-    """[players] section: where DataService / ProfileStore keeps the profiles."""
-    raw = _expand(raw, where)
-    unknown = set(raw) - {"datastore", "key_prefix", "scope"}
-    if unknown:
-        raise ConfigError(f"{where}: unknown field(s) {', '.join(sorted(unknown))} "
-                          "(expected: datastore, key_prefix, scope).")
+def _parse_players(defaults_raw: dict, env_players: Any, where: str) -> PlayersConfig:
+    """[players] section (global, overridden per environment): where DataService /
+    ProfileStore keeps the profiles. The environment's part is already expanded."""
+    if not isinstance(env_players, dict):
+        raise ConfigError(f"{where} must be a section.")
+    _check_keys(defaults_raw, PLAYERS_KEYS, "players")
+    _check_keys(env_players, PLAYERS_KEYS, where)
+    raw = {**_expand(defaults_raw, "players"), **env_players}
     defaults = PlayersConfig()
     datastore = str(raw.get("datastore", defaults.datastore)).strip()
     if not datastore:

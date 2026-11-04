@@ -3,10 +3,11 @@ description: Backs up all player profiles (ProfileStore / DataService) and keeps
 author: robops
 
 # Usage (in the game repository):
-#   - uses: YOUR-ACCOUNT/robops/backup@main
+#   - uses: YOUR-ACCOUNT/robops/backup@v1.3.0
 #     with:
 #       environment: production
 #       api-key: ${{ secrets.ROBLOX_API_KEY }}
+#       age-recipient: ${{ vars.BACKUP_AGE_RECIPIENT }}   # optional: encrypts the backup
 #
 # The key must have, for universe-datastores, the permission to list keys and read entries.
 
@@ -26,6 +27,13 @@ inputs:
     description: Number of days the backup is kept on GitHub
     required: false
     default: "30"
+  age-recipient:
+    description: >-
+      Optional age public key (age1…). When set, the backup is encrypted with it before
+      being uploaded and only the encrypted file is kept. Decrypt with:
+      age -d -i key.txt players-….json.gz.age > players-….json.gz (Linux runner required).
+    required: false
+    default: ""
   python-version:
     description: Python version to use (3.11 minimum)
     required: false
@@ -34,7 +42,7 @@ inputs:
 outputs:
   file:
     description: Name of the backup file
-    value: ${{ steps.backup.outputs.name }}
+    value: ${{ steps.encrypt.outputs.name || steps.backup.outputs.name }}
   count:
     description: Number of profiles backed up
     value: ${{ steps.backup.outputs.backup_count }}
@@ -63,13 +71,33 @@ runs:
         echo "name=$name" >> "$GITHUB_OUTPUT"
         robops player backup --env "$IN_ENVIRONMENT" --config "$IN_CONFIG" --out "robops-backup/$name"
 
+    # Player data is personal data: with age-recipient, only the encrypted file leaves the runner.
+    - name: Encrypt the backup
+      id: encrypt
+      if: (success() || failure()) && inputs.age-recipient != '' && steps.backup.outputs.name != ''
+      shell: bash
+      env:
+        RECIPIENT: ${{ inputs.age-recipient }}
+        NAME: ${{ steps.backup.outputs.name }}
+      run: |
+        set -euo pipefail
+        file="robops-backup/$NAME"
+        [ -f "$file" ] || exit 0
+        if ! command -v age > /dev/null; then
+          sudo apt-get update -qq && sudo apt-get install -y -qq age > /dev/null
+        fi
+        age --encrypt --recipient "$RECIPIENT" --output "$file.age" "$file"
+        rm -f "$file"
+        echo "name=$NAME.age" >> "$GITHUB_OUTPUT"
+
     # Uploaded even if a few profiles could not be read (they are listed in the file).
     - name: Keep the backup
-      if: success() || failure()
+      if: (success() || failure()) && steps.backup.outputs.name != ''
       uses: actions/upload-artifact@v7
       with:
-        name: ${{ steps.backup.outputs.name }}
-        path: robops-backup/${{ steps.backup.outputs.name }}
+        name: ${{ steps.encrypt.outputs.name || steps.backup.outputs.name }}
+        # With encryption requested, never fall back to the plain file.
+        path: robops-backup/${{ steps.backup.outputs.name }}${{ inputs.age-recipient != '' && '.age' || '' }}
         retention-days: ${{ inputs.retention-days }}
         compression-level: 0          # already compressed as .gz
         if-no-files-found: ignore
@@ -79,7 +107,7 @@ runs:
       shell: bash
       env:
         COUNT: ${{ steps.backup.outputs.backup_count }}
-        NAME: ${{ steps.backup.outputs.name }}
+        NAME: ${{ steps.encrypt.outputs.name || steps.backup.outputs.name }}
         DAYS: ${{ inputs.retention-days }}
       run: |
         if [ -n "${COUNT:-}" ]; then

@@ -10,13 +10,12 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __version__, updater
 from . import output as out
+from . import players as pl
 from .client import OpenCloudClient, RobloxApiError
 from .config import DEFAULT_CONFIG, ConfigError, load_config
 from .deploy import DeployError, DeployOptions, deploy, overwrite_entry
-from . import players as pl
-from . import updater
 
 EXIT_OK, EXIT_FAILURE, EXIT_USAGE = 0, 1, 2
 
@@ -79,6 +78,14 @@ def _resolve_target(args, *, need_place: bool) -> tuple[int, int | None, str]:
     return args.universe_id, getattr(args, "place_id", None), key_env or "ROBLOX_API_KEY"
 
 
+def _place_target(args) -> tuple[int, int, str]:
+    """(universe_id, place_id, key variable) for the commands that act on one place."""
+    universe_id, place_id, key_env = _resolve_target(args, need_place=True)
+    if place_id is None:  # _resolve_target already refuses this case
+        raise UsageError("Specify --place-id (or --env with --place).")
+    return universe_id, place_id, key_env
+
+
 def _print_json(data: Any) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -98,7 +105,7 @@ def _parse_value(args) -> Any:
         if args.file is None:
             # Value passed on the command line that is not JSON: treat it as a string.
             return text
-        raise UsageError(f"{args.file} is not valid JSON.")
+        raise UsageError(f"{args.file} is not valid JSON.") from None
 
 
 # ---------------------------------------------------------------- commands
@@ -120,15 +127,17 @@ def cmd_deploy(args) -> int:
     if not opts.dry_run:
         _api_key(env.api_key_env)  # fails early, before the build, if the key is missing
 
-    report = deploy(env, opts, project_root=cfg.root, client_factory=lambda: _client(env.api_key_env))
-
-    out.set_output("environment", env.name)
-    out.set_output("universe_id", str(env.universe_id))
-    out.set_output("versions", json.dumps(report.versions()))
-    for place in report.places:
-        if place.version is not None:
-            out.set_output(f"version_{place.name}", str(place.version))
-    out.write_summary(report.to_markdown())
+    try:
+        report = deploy(env, opts, project_root=cfg.root, client_factory=lambda: _client(env.api_key_env))
+    except Exception as exc:
+        partial = getattr(exc, "deploy_report", None)
+        if partial is not None and not partial.dry_run:
+            _publish_report(env.name, partial)
+            if partial.published():
+                out.warn("Already live before the failure: "
+                         + ", ".join(f"{p.name} v{p.version}" for p in partial.published()))
+        raise
+    _publish_report(env.name, report)
 
     if args.json:
         _print_json({"environment": env.name, "universe_id": env.universe_id, "versions": report.versions(),
@@ -139,11 +148,25 @@ def cmd_deploy(args) -> int:
     return EXIT_OK
 
 
+def _publish_report(environment: str, report) -> None:
+    """GitHub outputs + run summary (also written when the deployment failed halfway)."""
+    out.set_output("environment", environment)
+    out.set_output("universe_id", str(report.universe_id))
+    out.set_output("versions", json.dumps(report.versions()))
+    out.set_output("failed", "true" if report.error else "false")
+    for place in report.places:
+        if place.version is not None:
+            out.set_output(f"version_{place.name}", str(place.version))
+    out.write_summary(report.to_markdown())
+
+
 def cmd_publish(args) -> int:
     path = Path(args.file)
     if not path.is_file():
         raise UsageError(f"File not found: {path}")
-    universe_id, place_id, key_env = _resolve_target(args, need_place=True)
+    if path.suffix.lower() not in (".rbxl", ".rbxlx"):
+        raise UsageError(f"{path.name}: a place must be a .rbxl or .rbxlx file.")
+    universe_id, place_id, key_env = _place_target(args)
     result = _client(key_env).publish_place(universe_id, place_id, path, version_type=args.version_type)
     out.success(f"Place {place_id} overwritten: version {result.version_number} ({result.version_type})")
     out.set_output("version", str(result.version_number))
@@ -151,7 +174,7 @@ def cmd_publish(args) -> int:
 
 
 def cmd_place_get(args) -> int:
-    universe_id, place_id, key_env = _resolve_target(args, need_place=True)
+    universe_id, place_id, key_env = _place_target(args)
     _print_json(_client(key_env).get_place(universe_id, place_id))
     return EXIT_OK
 
@@ -159,7 +182,7 @@ def cmd_place_get(args) -> int:
 def cmd_place_update(args) -> int:
     if args.name is None and args.description is None and args.server_size is None:
         raise UsageError("Nothing to update: specify --name, --description and/or --server-size.")
-    universe_id, place_id, key_env = _resolve_target(args, need_place=True)
+    universe_id, place_id, key_env = _place_target(args)
     _print_json(
         _client(key_env).update_place(
             universe_id, place_id, display_name=args.name, description=args.description,
@@ -379,6 +402,15 @@ def _restore_one(client, universe_id: int, cfg: pl.PlayersConfig, user_id: str, 
     current = pl.fetch_profile(client, universe_id, cfg, user_id)
     _ensure_writable(user_id, current, args.force)
 
+    if not current.exists:
+        if args.all and not args.recreate_missing:
+            # Never resurrect in bulk a profile deleted since the backup: it may have been
+            # erased following a data erasure request (right to be forgotten).
+            out.info(f"Player {user_id}: no current profile, skipped (add --recreate-missing to recreate it).")
+            return "skipped (no current profile)"
+        out.warn(f"Player {user_id}: no current profile, it will be recreated from the backup. "
+                 "Do not do this for a player deleted following a data erasure request.")
+
     current_ok = current.exists and pl.is_profile(current.value)
     if current.exists and not current_ok:
         out.warn(f"Player {user_id}: current profile unreadable, it will be replaced by the full profile from the backup.")
@@ -391,11 +423,9 @@ def _restore_one(client, universe_id: int, cfg: pl.PlayersConfig, user_id: str, 
 
     new_profile = pl.with_data(current.value if current_ok else None, backup_profile["Data"],
                                fallback_profile=backup_profile)
-    if not current.exists:
-        out.info(f"Player {user_id}: no current profile, the backup profile will be recreated.")
-    elif not changes:
+    if current.exists and not changes:
         out.info(f"Player {user_id}: data identical to the backup, only the stale lock will be removed.")
-    else:
+    elif current.exists:
         _print_changes(user_id, changes)
     if args.dry_run:
         return "simulated"
@@ -407,7 +437,8 @@ def _restore_one(client, universe_id: int, cfg: pl.PlayersConfig, user_id: str, 
 
 def cmd_player_restore(args) -> int:
     universe_id, cfg, key_env = _players_target(args)
-    backup = pl.load_backup(Path(args.backup), cfg)
+    backup = pl.load_backup(Path(args.backup), cfg, universe_id=universe_id,
+                            allow_other_universe=args.allow_other_universe)
     if args.all:
         if args.user_ids:
             raise UsageError("Use --all OR a list of players, not both.")
@@ -583,12 +614,16 @@ def cmd_check(args) -> int:
 def _point_to_action_repo(workflow: str, action_repo: str) -> str:
     """Replaces "uses: ./tools/robops[/sub-action]" with robops' GitHub repository.
 
-    e.g. ./tools/robops/backup → alex/robops/backup@main
+    e.g. ./tools/robops/backup → alex/robops/backup@v1.3.0
+
+    Without an explicit @ref, the workflow is pinned to the tag of this robops
+    version rather than @main: the deployment receives the Roblox API key, so it
+    must not run whatever lands on robops' main branch later.
     """
     import re
 
     repo, _, ref = action_repo.partition("@")
-    ref = ref or "main"
+    ref = ref or f"v{__version__}"
     pattern = re.compile(r"uses: \./tools/robops(/[\w.-]+)?[^\S\n]*(#[^\n]*)?")
     return pattern.sub(lambda m: f"uses: {repo}{m.group(1) or ''}@{ref}", workflow)
 
@@ -796,6 +831,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--from", dest="backup", required=True, help="backup file")
     p.add_argument("--all", action="store_true", help="restore every player in the backup")
     p.add_argument("--yes", action="store_true", help="confirm the restore with --all")
+    p.add_argument("--recreate-missing", action="store_true",
+                   help="with --all, also recreate the profiles deleted since the backup (never do this "
+                        "if some were deleted following a data erasure request)")
+    p.add_argument("--allow-other-universe", action="store_true",
+                   help="accept a backup taken in another universe (e.g. staging → production)")
     safety(p)
     p.set_defaults(func=cmd_player_restore)
 
@@ -828,8 +868,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("init", parents=[common], help="create robops.toml and the GitHub Actions workflow")
     p.add_argument("--force", action="store_true", help="overwrite existing files")
-    p.add_argument("--action-repo", metavar="ACCOUNT/robops",
-                   help="robops GitHub repository used by the workflow (default: local copy in tools/robops)")
+    p.add_argument("--action-repo", metavar="ACCOUNT/robops[@REF]",
+                   help="robops GitHub repository used by the workflow, pinned to the tag of this version "
+                        "unless @REF is given (default: local copy in tools/robops)")
     p.set_defaults(func=cmd_init)
 
     return parser
@@ -842,7 +883,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     code = _run(args)
     if args.command != "self-update":
-        # Daily check: silent, never blocking (disabled in CI and with pip).
+        # Daily check: only notifies unless ROBOPS_AUTO_UPDATE=1 (disabled in CI and with pip).
         updater.maybe_auto_update()
     return code
 
@@ -865,6 +906,12 @@ def _run(args) -> int:
     except KeyboardInterrupt:
         out.error("Interrupted.")
         return 130
+    except Exception as exc:  # noqa: BLE001 — last resort: a message rather than a traceback
+        if os.environ.get("ROBOPS_DEBUG"):
+            raise
+        out.error(f"Unexpected error ({type(exc).__name__}): {exc}\n"
+                  "  This is probably a robops bug. Run again with ROBOPS_DEBUG=1 to see the details.")
+        return EXIT_FAILURE
 
 
 if __name__ == "__main__":

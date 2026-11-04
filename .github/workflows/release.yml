@@ -8,8 +8,8 @@
 #  Git method (equivalent):
 #    git tag v1.2.0 && git push origin v1.2.0   (the tag must equal __version__)
 #
-#  For a new version: bump __version__, commit, push, then run again.
-#  Equipped PCs update themselves within 24 h.
+#  For a new version: bump __version__, update CHANGELOG.md, commit, push, then run again.
+#  Installed PCs are told within 24 h (robops self-update installs it).
 # ─────────────────────────────────────────────────────────────────────────────
 name: Release
 
@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write          # needed to create the release
+  contents: read
 
 concurrency:
   group: release
@@ -39,6 +39,10 @@ jobs:
   build:
     needs: test
     runs-on: windows-latest
+    permissions:
+      contents: write        # create the release
+      id-token: write        # sign the build provenance attestation
+      attestations: write
     defaults:
       run:
         shell: bash
@@ -93,6 +97,17 @@ jobs:
           ../dist/robops.exe check || true        # the template requires IDs: we only check that it runs
           ../dist/robops-setup.exe --help
           cd .. && cat dist/SHA256SUMS.txt
+
+      # Verifiable with:  gh attestation verify robops.exe --repo <owner>/robops
+      # (proves the .exe was built by this workflow from this repository).
+      # Free for public repositories; private ones need GitHub Enterprise Cloud.
+      - name: Attest build provenance
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/robops.exe
+            dist/robops-setup.exe
 
       - name: Publish the release
         env:

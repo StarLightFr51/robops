@@ -63,19 +63,32 @@ def test_apply_edits_and_changed_fields():
     assert pl.changed_fields(data, new) == ["~ coins", "+ deep", "+ inventory", "- old", "~ stats.level", "+ title"]
     with pytest.raises(pl.PlayerError):
         pl.apply_edits({}, ["no_equals_sign"])
+    with pytest.raises(pl.PlayerError, match="Empty path"):
+        pl.apply_edits({"a": 1}, [], [""])
 
 
 def test_load_backup_formats(tmp_path):
     cfg = pl.PlayersConfig()
     export = tmp_path / "export.json"
-    export.write_text(json.dumps({"PLAYER_1": profile({"a": 1}), "OTHER": {}}))
+    export.write_text(json.dumps({"PLAYER_1": profile({"a": 1}), "OTHER": {}}), encoding="utf-8")
     assert list(pl.load_backup(export, cfg)) == ["1"]
 
     native = tmp_path / "b.json"
     native.write_text(json.dumps({"format": pl.BACKUP_FORMAT, "datastore": "Other", "key_prefix": "PLAYER_",
-                                  "profiles": {}}))
+                                  "profiles": {}}), encoding="utf-8")
     with pytest.raises(pl.PlayerError, match="Other"):
         pl.load_backup(native, cfg)
+
+
+def test_load_backup_refuses_another_universe(tmp_path):
+    cfg = pl.PlayersConfig()
+    native = tmp_path / "b.json"
+    native.write_text(json.dumps({"format": pl.BACKUP_FORMAT, "universe_id": 111, "datastore": "Default",
+                                  "key_prefix": "PLAYER_", "profiles": {"1": {"value": {}}}}), encoding="utf-8")
+    assert list(pl.load_backup(native, cfg, universe_id=111)) == ["1"]
+    with pytest.raises(pl.PlayerError, match="universe 111.*universe 222"):
+        pl.load_backup(native, cfg, universe_id=222)
+    assert list(pl.load_backup(native, cfg, universe_id=222, allow_other_universe=True)) == ["1"]
 
 
 # ------------------------------------------------------------- fake DataStore
@@ -179,7 +192,7 @@ def test_backup_then_restore_roundtrip(store, tmp_path):
     assert body["users"] == ["users/1"]
     assert params == {"allowMissing": "true"}
     safety = list((tmp_path / ".robops" / "safety").glob("PLAYER_1-*.json"))
-    assert len(safety) == 1 and json.loads(safety[0].read_text())["value"]["Data"]["bug"] is True
+    assert len(safety) == 1 and json.loads(safety[0].read_text(encoding="utf-8"))["value"]["Data"]["bug"] is True
 
 
 def test_restore_refuses_online_player(store, capsys):
@@ -256,7 +269,7 @@ universe_id = 5
 [[environments.prod.places]]
 place_id = 6
 file = "game.rbxl"
-""")
+""", encoding="utf-8")
     fake = FakeDataStore({"Player_1": profile({"coins": 1})}, datastore="PlayerData")
     original = OpenCloudClient.__init__
 
@@ -275,8 +288,8 @@ def test_safety_copies_never_overwrite_each_other(tmp_path):
     current.value = profile({"coins": 2})
     second = pl.save_safety_copy(tmp_path, cfg, "1", current)
     assert first != second
-    assert json.loads(first.read_text())["value"]["Data"] == {"coins": 1}
-    assert json.loads(second.read_text())["value"]["Data"] == {"coins": 2}
+    assert json.loads(first.read_text(encoding="utf-8"))["value"]["Data"] == {"coins": 1}
+    assert json.loads(second.read_text(encoding="utf-8"))["value"]["Data"] == {"coins": 2}
 
 
 def test_empty_backup_explains_why(store, capsys):
@@ -301,7 +314,7 @@ def test_backup_suggests_prefix_when_keys_dont_match(store, capsys, keys, expect
 def test_backup_ignores_other_keys_in_same_store(store, tmp_path):
     store.entries["Config"] = {"value": {"motd": "hi"}, "etag": "e", "users": []}
     assert run("backup", "--out", "b.json") == 0
-    data = json.loads((tmp_path / "b.json").read_text())
+    data = json.loads((tmp_path / "b.json").read_text(encoding="utf-8"))
     assert data["count"] == 3 and "Config" not in data["profiles"]
 
 
@@ -313,7 +326,7 @@ def test_guess_prefix():
 
 def test_backup_targets_global_scope_by_default(store, tmp_path):
     assert run("backup", "--out", "b.json") == 0
-    data = json.loads((tmp_path / "b.json").read_text())
+    data = json.loads((tmp_path / "b.json").read_text(encoding="utf-8"))
     assert data["count"] == 3 and data["scope"] == "global" and data["errors"] == {}
     assert set(store.scopes) == {"global"}
 
@@ -322,7 +335,7 @@ def test_backup_without_scope_handles_scope_prefixed_ids(store, tmp_path):
     client = OpenCloudClient("k", session=FakeSession(router=store), sleep=lambda s: None)
     result = pl.backup_players(client, 99, pl.PlayersConfig(scope=None), tmp_path / "b.json")
     assert result.count == 3 and result.errors == {}
-    data = json.loads((tmp_path / "b.json").read_text())
+    data = json.loads((tmp_path / "b.json").read_text(encoding="utf-8"))
     assert set(data["profiles"]) == {"1", "2", "3"}
 
 
@@ -344,10 +357,27 @@ universe_id = 5
 [[environments.prod.places]]
 place_id = 6
 file = "game.rbxl"
-""")
+""", encoding="utf-8")
     players = load_config(tmp_path / "robops.toml").env("prod").players
     assert (players.scope, players.key_prefix) == ("global", "PLAYER_")
 
 
 def test_guess_prefix_ignores_scope():
     assert pl.guess_prefix(["global/PLAYER_4681560223", "global/PLAYER_522534348"]) == "PLAYER_"
+
+
+def test_restore_all_does_not_resurrect_deleted_profiles(store, capsys):
+    with open("b.json", "w") as fh:
+        json.dump({k: profile({"coins": 1}) for k in ("PLAYER_1", "PLAYER_3", "PLAYER_9")}, fh)
+    assert run("restore", "--all", "--from", "b.json", "--yes") == 0
+    assert sorted(p[0] for p in store.patches) == ["PLAYER_1", "PLAYER_3"]     # 9 was deleted since
+    assert "1 skipped (no current profile)" in capsys.readouterr().out
+
+    assert run("restore", "--all", "--from", "b.json", "--yes", "--recreate-missing") == 0
+    assert "PLAYER_9" in [p[0] for p in store.patches]
+
+
+def test_restore_refuses_backup_from_another_universe(store, tmp_path, capsys):
+    assert run("backup", "--out", "b.json") == 0                 # universe 99
+    assert cli.main(["player", "restore", "1", "--from", "b.json", "--universe-id", "100"]) == 1
+    assert "allow-other-universe" in capsys.readouterr().err

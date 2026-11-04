@@ -52,5 +52,6 @@ def make_client():
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for var in ("GITHUB_ACTIONS", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "ROBLOX_API_KEY", "CI",
-                "ROBOPS_REPO", "ROBOPS_NO_UPDATE", "ROBOPS_GITHUB_TOKEN", "GH_TOKEN", "ROBOPS_STATE_DIR"):
+                "ROBOPS_REPO", "ROBOPS_NO_UPDATE", "ROBOPS_GITHUB_TOKEN", "GH_TOKEN", "ROBOPS_STATE_DIR",
+                "ROBOPS_AUTO_UPDATE", "ROBOPS_DEBUG"):
         monkeypatch.delenv(var, raising=False)

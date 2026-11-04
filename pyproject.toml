@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,11 +9,12 @@ description = "Roblox DevOps CLI: publishes places and overwrites an experience'
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["requests>=2.31"]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["roblox", "open-cloud", "devops", "github-actions", "rojo"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.10", "types-requests"]
 
 [project.scripts]
 robops = "robops.cli:main"
@@ -29,3 +30,20 @@ robops = ["templates/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "BLE", "I"]
+ignore = ["E501", "E702"]   # long messages and "p.add_argument(...); p.add_argument(...)" are intentional
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+warn_unused_ignores = true
+
+[tool.ruff.lint.isort]
+known-first-party = ["robops"]
+known-local-folder = ["conftest", "test_updater"]

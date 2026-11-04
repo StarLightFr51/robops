@@ -28,7 +28,7 @@ file = "build/game.rbxl"
 
 def write(tmp_path, text):
     path = tmp_path / "robops.toml"
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -97,3 +97,47 @@ def test_bundled_template_is_valid_toml_but_requires_ids(tmp_path):
     assert cfg.names == ["staging", "production"]
     with pytest.raises(ConfigError, match="greater than 0"):
         cfg.env("staging")
+
+
+ONE_PLACE = "[[environments.a.places]]\nplace_id = 1\nfile = 'x.rbxl'\n"
+
+
+@pytest.mark.parametrize("raw, expected", [("false", False), ("False", False), ("0", False), ("", False),
+                                           ("true", True), ("yes", True), ("1", True)])
+def test_restart_servers_from_env_var_is_parsed_strictly(tmp_path, monkeypatch, raw, expected):
+    monkeypatch.setenv("RESTART", raw)
+    text = "[environments.a]\nuniverse_id = 1\nrestart_servers = \"${RESTART:-}\"\n" + ONE_PLACE
+    assert load_config(write(tmp_path, text)).env("a").restart_servers is expected
+
+
+def test_restart_servers_rejects_garbage(tmp_path):
+    text = "[environments.a]\nuniverse_id = 1\nrestart_servers = 'sometimes'\n" + ONE_PLACE
+    with pytest.raises(ConfigError, match="true or false"):
+        load_config(write(tmp_path, text)).env("a")
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("[environments.a]\nuniverse_id = 1\nrestart_server = true\n" + ONE_PLACE,
+         "'restart_server' \\(did you mean 'restart_servers'\\?\\)"),
+        ("[environments.a]\nuniverse_id = 1\nversoin_type = 'Saved'\n" + ONE_PLACE, "did you mean 'version_type'"),
+        ("[environments.a]\nuniverse_id = 1\n" + ONE_PLACE + "server_sise = 10\n", "did you mean 'server_size'"),
+        ("[environments.a]\nuniverse_id = 1\n" + ONE_PLACE
+         + "[[environments.a.datastores]]\nname = 'C'\nfile = 'c.json'\nscop = 'x'\n", "did you mean 'scope'"),
+        ("[environments.a]\nuniverse_id = 1\n[environments.a.players]\nprefix = 'P_'\n" + ONE_PLACE,
+         "unknown field"),
+        ("[environments.a]\nuniverse_id = 1\nplaces = 'x.rbxl'\n", "list of"),
+        ("[environments.a]\nuniverse_id = 1\n" + ONE_PLACE + "display_name = 42\n", "must be text"),
+    ],
+)
+def test_typos_and_wrong_types_are_reported(tmp_path, text, message):
+    with pytest.raises(ConfigError, match=message):
+        load_config(write(tmp_path, text)).env("a")
+
+
+def test_unknown_root_and_build_fields_fail_at_load(tmp_path):
+    with pytest.raises(ConfigError, match="did you mean 'environments'"):
+        load_config(write(tmp_path, "[environment.a]\nuniverse_id = 1\n"))
+    with pytest.raises(ConfigError, match="did you mean 'command'"):
+        load_config(write(tmp_path, "[build]\ncommande = 'rojo build'\n[environments.a]\nuniverse_id = 1\n"))

@@ -123,7 +123,18 @@ def frozen_exe(tmp_path, monkeypatch):
     return exe
 
 
-def test_auto_update_installs_new_version_once_a_day(frozen_exe):
+def test_auto_update_only_notifies_by_default(frozen_exe):
+    gh, messages = FakeGitHub(), []
+    assert updater.maybe_auto_update(now=1000, session=gh, notify=messages.append) is None
+    assert frozen_exe.read_bytes() == b"MZ-old-version"          # nothing downloaded or replaced
+    assert not any("assets" in url for url in gh.calls)
+    assert "9.0.0 is available" in messages[0] and "robops self-update" in messages[0]
+    assert updater.maybe_auto_update(now=1000 + 3600, session=gh, notify=messages.append) is None
+    assert len(messages) == 1                                     # at most once a day
+
+
+def test_auto_update_installs_new_version_once_a_day_when_opted_in(frozen_exe, monkeypatch):
+    monkeypatch.setenv("ROBOPS_AUTO_UPDATE", "1")
     gh, messages = FakeGitHub(), []
     assert updater.maybe_auto_update(now=1000, session=gh, notify=messages.append) == "9.0.0"
     assert frozen_exe.read_bytes() == NEW_EXE
@@ -160,13 +171,14 @@ def test_auto_update_disabled_without_exe(monkeypatch):
     assert updater.maybe_auto_update(now=1, session=gh) is None and gh.calls == []
 
 
-def test_auto_update_failure_never_raises(frozen_exe):
+def test_auto_update_failure_never_raises(frozen_exe, monkeypatch):
+    monkeypatch.setenv("ROBOPS_AUTO_UPDATE", "1")
     messages = []
     gh = FakeGitHub(sums="")                              # no checksum → refused
     assert updater.maybe_auto_update(now=1, session=gh, notify=messages.append) is None
     assert frozen_exe.read_bytes() == b"MZ-old-version"
     assert "failed" in messages[0]
-    state = json.loads((frozen_exe.parent.parent / "state" / "update.json").read_text())
+    state = json.loads((frozen_exe.parent.parent / "state" / "update.json").read_text(encoding="utf-8"))
     assert state["last_check"] == 1                       # we don't retry on every command
 
 

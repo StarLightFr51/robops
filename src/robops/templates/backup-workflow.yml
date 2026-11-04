@@ -10,7 +10,13 @@
 #  Prerequisite: this repository's ROBLOX_API_KEY secret, which must also have, for
 #  universe-datastores, the permission to list keys and read entries.
 #
-#  "uses:": YOUR-ACCOUNT/robops/backup@main if robops lives in its own repository,
+#  Recommended: encrypt the backups (they contain players' personal data).
+#    1. On your PC: age-keygen -o robops-backup-key.txt   (keep this file safe, NOT in Git)
+#    2. Copy the "public key: age1…" line into a BACKUP_AGE_RECIPIENT repository
+#       variable (Settings → Secrets and variables → Actions → Variables).
+#    3. To read a backup: age -d -i robops-backup-key.txt players-….json.gz.age > players.json.gz
+#
+#  "uses:": YOUR-ACCOUNT/robops/backup@v<version> if robops lives in its own repository,
 #  ./tools/robops/backup if the robops folder is copied into this repository.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Player Backup
@@ -37,4 +43,5 @@ jobs:
         with:
           environment: production
           api-key: ${{ secrets.ROBLOX_API_KEY_PRODUCTION || secrets.ROBLOX_API_KEY }}
+          age-recipient: ${{ vars.BACKUP_AGE_RECIPIENT }}    # empty = not encrypted
           retention-days: "30"
