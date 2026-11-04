@@ -13,6 +13,7 @@ from typing import Any
 from . import __version__, updater
 from . import output as out
 from . import players as pl
+from .checks import check_environment
 from .client import OpenCloudClient, RobloxApiError
 from .config import DEFAULT_CONFIG, ConfigError, load_config
 from .deploy import DeployError, DeployOptions, deploy, overwrite_entry
@@ -562,52 +563,50 @@ def cmd_self_update(args) -> int:
 def cmd_check(args) -> int:
     cfg = load_config(args.config)
     names = [args.environment] if args.environment else cfg.names
+    printers = {"ok": out.success, "info": out.info, "warn": out.warn, "error": out.error}
     problems = 0
     for name in names:
         with out.group(f"Environment {name}"):
-            try:
-                env = cfg.env(name)
-            except ConfigError as exc:
-                out.error(str(exc))
+            env, findings = check_environment(cfg, name)
+            for finding in findings:
+                printers[finding.level](finding.message)
+            problems += sum(1 for f in findings if f.level == "error")
+            if env is None or not args.online:
+                continue
+            if not os.environ.get(env.api_key_env):
                 problems += 1
                 continue
-            out.success(f"universe {env.universe_id}, {len(env.places)} place(s), version {env.version_type}")
-            if env.build_command:
-                out.info(f"build: {env.build_command}")
-            out.info(f"player profiles: DataStore {env.players.datastore}, keys {env.players.key_prefix}<UserId>"
-                     + (f", scope {env.players.scope}" if env.players.scope else ""))
+            client = _client(env.api_key_env)
             for place in env.places:
-                state = "present" if place.file.is_file() else "missing (will be produced by the build?)"
-                out.info(f"  • {place.name} → {place.place_id} : {place.file.name} {state}")
-            for seed in env.datastores:
-                if seed.file.is_file():
-                    out.info(f"  • DataStore {seed.name} ← {seed.file.name} present")
-                else:
+                try:
+                    info = client.get_place(env.universe_id, place.place_id)
+                    out.success(f"  {place.name} reachable: '{info.get('displayName', '?')}'")
+                except RobloxApiError as exc:
+                    out.error(f"  {place.name}: {exc.describe()}")
                     problems += 1
-                    out.error(f"  • DataStore {seed.name}: file not found ({seed.file}). Create it, "
-                              f"or comment out the [[environments.{name}.datastores]] section if you don't use it.")
-            if not os.environ.get(env.api_key_env):
-                out.warn(
-                    f"{env.api_key_env} is not set on this machine. This is normal if you publish through "
-                    "GitHub Actions: a GitHub secret only exists during runs on GitHub. "
-                    f"To test locally, in PowerShell:  $env:{env.api_key_env} = \"your-key\""
-                )
-                if args.online:
-                    problems += 1
-                    continue
-            if args.online:
-                client = _client(env.api_key_env)
-                for place in env.places:
-                    try:
-                        info = client.get_place(env.universe_id, place.place_id)
-                        out.success(f"  {place.name} reachable: '{info.get('displayName', '?')}'")
-                    except RobloxApiError as exc:
-                        out.error(f"  {place.name}: {exc.describe()}")
-                        problems += 1
     if problems:
         out.error(f"{problems} problem(s) detected.")
         return EXIT_FAILURE
     out.success("Configuration is valid.")
+    return EXIT_OK
+
+
+def cmd_dashboard(args) -> int:
+    from . import dashboard as dash
+    from . import github
+
+    config_path = Path(args.config)
+    cfg = load_config(config_path)                      # fails early on a broken robops.toml
+    repo = args.github_repo or github.repo_from_remote(cfg.root)
+    token = github.token()
+    if not repo:
+        out.warn("GitHub repository not found (no 'origin' remote): deployments and GitHub backups are hidden. "
+                 "Pass --github-repo owner/name.")
+    elif not token:
+        out.info("No ROBOPS_GITHUB_TOKEN: deployments and backups are only visible for a public repository, "
+                 "and the Deploy / Backup buttons need a token with Actions: Read and write.")
+    app = dash.Dashboard(config_path, github_repo=repo, github_token=token)
+    dash.serve(app, port=args.port, open_browser=not args.no_browser)
     return EXIT_OK
 
 
@@ -860,6 +859,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("environment", nargs="?", help="environment to check (default: all)")
     p.add_argument("--online", action="store_true", help="also check the key and IDs against Roblox")
     p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser("dashboard", parents=[common],
+                       help="local web dashboard: live game, deployments, players, backups, DataStores")
+    p.add_argument("--port", type=int, default=8765, help="local port (default: 8765)")
+    p.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    p.add_argument("--github-repo", metavar="OWNER/NAME",
+                   help="game repository for deployments and backups (default: the 'origin' git remote)")
+    p.set_defaults(func=cmd_dashboard)
 
     p = sub.add_parser("self-update", parents=[common], help="update robops.exe from the GitHub releases")
     p.add_argument("--check", action="store_true", help="only report whether an update exists")
