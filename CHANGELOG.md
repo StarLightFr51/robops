@@ -3,6 +3,22 @@
 All notable changes to robops. Versions follow [semantic versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH`.
 
+## 1.4.1
+
+### Fixed
+- Dashboard: a GitHub 404 on a private repository no longer says "set ROBOPS_GITHUB_TOKEN" when the token is set.
+  It now tells which of these is the problem:
+  - the token is missing;
+  - the token is invalid or expired;
+  - the token can't see the repository (resource owner, repository access);
+  - the token lacks the Actions permission;
+  - the workflow was not found (the message lists the workflows that exist).
+- The deploy and backup workflows are detected even when renamed (e.g. `deploy.yml`); `--deploy-workflow` and
+  `--backup-workflow` force a file name.
+
+### Added
+- Setup view: step-by-step check of the GitHub connection, with a *Check again* button.
+
 ## 1.4.0
 
 ### Added

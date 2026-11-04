@@ -21,6 +21,12 @@ from .updater import make_session
 
 DEPLOY_WORKFLOW = "roblox-deploy.yml"
 BACKUP_WORKFLOW = "roblox-backup.yml"
+# How to recognise each workflow in a repository: file created by `robops init`,
+# then its display name, then any file/name containing the keyword.
+WORKFLOW_KINDS = {
+    "deploy": (DEPLOY_WORKFLOW, "Roblox Deploy", "deploy"),
+    "backup": (BACKUP_WORKFLOW, "Player Backup", "backup"),
+}
 _REMOTE_RE = re.compile(r"github\.com[:/]+([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 
 
@@ -79,8 +85,14 @@ class GitHub:
             raise GitHubError(resp.status_code, f"GitHub HTTP {resp.status_code}: {message} {('— ' + hint) if hint else ''}".strip())
         return resp.json()
 
+    def info(self) -> dict:
+        return dict(self._call("GET", ""))
+
     def default_branch(self) -> str:
-        return str(self._call("GET", "")["default_branch"])
+        return str(self.info()["default_branch"])
+
+    def workflows(self) -> list[dict]:
+        return list(self._call("GET", "/actions/workflows", params={"per_page": 100}).get("workflows", []))
 
     def runs(self, workflow: str, *, per_page: int = 15) -> list[dict]:
         payload = self._call("GET", f"/actions/workflows/{workflow}/runs", params={"per_page": per_page})
@@ -94,3 +106,22 @@ class GitHub:
 
     def dispatch(self, workflow: str, ref: str, inputs: dict[str, str]) -> None:
         self._call("POST", f"/actions/workflows/{workflow}/dispatches", json={"ref": ref, "inputs": inputs})
+
+
+def workflow_file(workflow: dict) -> str:
+    return str(workflow.get("path", "")).rsplit("/", 1)[-1]
+
+
+def pick_workflow(workflows: list[dict], kind: str) -> dict | None:
+    """The deploy / backup workflow of a repository, even if it was renamed."""
+    file_name, display_name, keyword = WORKFLOW_KINDS[kind]
+    tests = (
+        lambda w: workflow_file(w) == file_name,
+        lambda w: w.get("name") == display_name,
+        lambda w: keyword in workflow_file(w).lower() or keyword in str(w.get("name", "")).lower(),
+    )
+    for test in tests:
+        found = [w for w in workflows if test(w)]
+        if found:
+            return found[0]
+    return None

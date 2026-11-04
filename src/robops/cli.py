@@ -605,7 +605,8 @@ def cmd_dashboard(args) -> int:
     elif not token:
         out.info("No ROBOPS_GITHUB_TOKEN: deployments and backups are only visible for a public repository, "
                  "and the Deploy / Backup buttons need a token with Actions: Read and write.")
-    app = dash.Dashboard(config_path, github_repo=repo, github_token=token)
+    app = dash.Dashboard(config_path, github_repo=repo, github_token=token,
+                         deploy_workflow=args.deploy_workflow, backup_workflow=args.backup_workflow)
     dash.serve(app, port=args.port, open_browser=not args.no_browser)
     return EXIT_OK
 
@@ -866,6 +867,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-browser", action="store_true", help="do not open the browser")
     p.add_argument("--github-repo", metavar="OWNER/NAME",
                    help="game repository for deployments and backups (default: the 'origin' git remote)")
+    p.add_argument("--deploy-workflow", metavar="FILE.yml",
+                   help="deploy workflow of the game repository (default: detected, e.g. roblox-deploy.yml)")
+    p.add_argument("--backup-workflow", metavar="FILE.yml",
+                   help="backup workflow of the game repository (default: detected, e.g. roblox-backup.yml)")
     p.set_defaults(func=cmd_dashboard)
 
     p = sub.add_parser("self-update", parents=[common], help="update robops.exe from the GitHub releases")

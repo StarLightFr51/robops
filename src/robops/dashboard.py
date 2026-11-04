@@ -41,7 +41,7 @@ from .checks import check_environment
 from .client import OpenCloudClient, RobloxApiError
 from .config import ConfigError, Environment, load_config
 from .deploy import overwrite_entry
-from .github import BACKUP_WORKFLOW, DEPLOY_WORKFLOW, GitHub, GitHubError
+from .github import GitHub, GitHubError, pick_workflow, workflow_file
 from .roblox_web import RobloxWeb, WebApiError
 
 DEFAULT_PORT = 8765
@@ -82,6 +82,8 @@ class Dashboard:
     web: RobloxWeb = field(default_factory=RobloxWeb)
     client_factory: Callable[[str], OpenCloudClient] = OpenCloudClient
     github_factory: Callable[[str, str | None], GitHub] = GitHub.create
+    deploy_workflow: str | None = None        # forced file name (--deploy-workflow), otherwise detected
+    backup_workflow: str | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     # ---------------------------------------------------------------- helpers
@@ -113,6 +115,80 @@ class Dashboard:
             raise DashboardError(400, "GitHub repository unknown: run the dashboard from your game's Git "
                                       "folder, or pass --github-repo owner/name.")
         return self.github_factory(self.github_repo, self.github_token)
+
+    def _repo_error(self, exc: GitHubError) -> DashboardError:
+        """Turns GitHub's opaque 401/403/404 into what to fix (a private repo always answers 404)."""
+        repo = self.github_repo
+        if exc.status == 401:
+            return DashboardError(502, "GitHub refuses ROBOPS_GITHUB_TOKEN: it is invalid or expired. Create a new "
+                                       "one on github.com/settings/personal-access-tokens.")
+        if exc.status == 404 and not self.github_token:
+            return DashboardError(502, f"GitHub can't show {repo} without a token (private repository). Set "
+                                       "ROBOPS_GITHUB_TOKEN in the terminal, then run robops dashboard again.")
+        if exc.status == 404:
+            return DashboardError(502, f"ROBOPS_GITHUB_TOKEN is set, but this token can't see {repo}. On "
+                                       "github.com/settings/personal-access-tokens, open the token: its Resource owner "
+                                       f"must be {repo.split('/')[0] if repo else 'the owner'}, and Repository access must "
+                                       f"include {repo.split('/')[-1] if repo else 'the game repository'}.")
+        return DashboardError(502, str(exc))
+
+    def _workflow_list(self, gh: GitHub) -> list[dict]:
+        try:
+            gh.info()
+        except GitHubError as exc:
+            raise self._repo_error(exc) from exc
+        try:
+            return gh.workflows()
+        except GitHubError as exc:
+            if exc.status in (403, 404):
+                raise DashboardError(502, f"The token can see {gh.repo} but not its Actions: edit it on "
+                                          "github.com/settings/personal-access-tokens and give it the permission "
+                                          "Actions: Read (Read and write for the Deploy and Back up buttons).") from exc
+            raise
+
+    def _resolve(self, workflows: list[dict], kind: str) -> dict:
+        forced = self.deploy_workflow if kind == "deploy" else self.backup_workflow
+        found = (next((w for w in workflows if workflow_file(w) == forced), None) if forced
+                 else pick_workflow(workflows, kind))
+        if found is None:
+            names = ", ".join(f"{workflow_file(w)} ({w.get('name')})" for w in workflows) or "none"
+            option = "--deploy-workflow" if kind == "deploy" else "--backup-workflow"
+            what = f"Workflow '{forced}'" if forced else f"No {kind} workflow"
+            raise DashboardError(404, f"{what} not found in {self.github_repo}. Workflows of this repository: {names}. "
+                                      f"Run robops dashboard with {option} <file.yml>, or create it with robops init.")
+        return found
+
+    def _workflow(self, gh: GitHub, kind: str) -> dict:
+        """The deploy / backup workflow: robops init's file, a renamed one, or the one forced by option."""
+        return self._resolve(self._workflow_list(gh), kind)
+
+    def _artifacts(self) -> list[dict]:
+        try:
+            return self.github().artifacts()
+        except GitHubError as exc:
+            raise self._repo_error(exc) from exc
+
+    def github_status(self) -> dict:
+        """Step-by-step diagnosis of the GitHub connection, shown in Setup."""
+        if not self.github_repo:
+            return {"repo": None, "steps": [{"level": "error", "message": "Repository not found: run the dashboard "
+                                             "from your game's Git folder, or pass --github-repo owner/name."}]}
+        steps = [{"level": "ok", "message": "ROBOPS_GITHUB_TOKEN is set."} if self.github_token else
+                 {"level": "warn", "message": "ROBOPS_GITHUB_TOKEN is not set: only a public repository can be read."}]
+        try:
+            workflows = self._workflow_list(self.github())
+        except (DashboardError, GitHubError) as exc:
+            steps.append({"level": "error", "message": str(exc)})
+            return {"repo": self.github_repo, "steps": steps}
+        steps.append({"level": "ok", "message": f"Repository {self.github_repo} and its Actions are readable."})
+        for kind in ("deploy", "backup"):
+            try:
+                w = self._resolve(workflows, kind)
+                steps.append({"level": "ok", "message": f"{kind.capitalize()} workflow: {workflow_file(w)} "
+                                                        f"({w.get('name')})."})
+            except DashboardError as exc:
+                steps.append({"level": "error", "message": str(exc)})
+        return {"repo": self.github_repo, "steps": steps}
 
     def _confirm(self, env: Environment, body: dict) -> None:
         if body.get("confirm") != env.name:
@@ -197,7 +273,8 @@ class Dashboard:
 
     def deployments(self) -> dict:
         gh = self.github()
-        runs = gh.runs(DEPLOY_WORKFLOW, per_page=15)
+        workflow = self._workflow(gh, "deploy")
+        runs = gh.runs(workflow_file(workflow), per_page=15)
 
         def describe(run: dict) -> dict:
             jobs = _attempt(lambda: gh.jobs(int(run["id"])))
@@ -214,7 +291,8 @@ class Dashboard:
             }
 
         with ThreadPoolExecutor(max_workers=6) as pool:
-            return {"repo": gh.repo, "runs": list(pool.map(describe, runs))}
+            return {"repo": gh.repo, "workflow": {"file": workflow_file(workflow), "name": workflow.get("name")},
+                    "runs": list(pool.map(describe, runs))}
 
     def backups(self) -> dict:
         local: list[dict[str, Any]] = []
@@ -231,7 +309,7 @@ class Dashboard:
                  "created_at": a.get("created_at"), "expires_at": a.get("expires_at"),
                  "expired": a.get("expired"),
                  "run_url": f"https://github.com/{self.github_repo}/actions/runs/{(a.get('workflow_run') or {}).get('id')}"}
-                for a in self.github().artifacts() if str(a.get("name", "")).startswith("players-")
+                for a in self._artifacts() if str(a.get("name", "")).startswith("players-")
             ])
         return {"local": local, "safety_copies": len(safety), "github": remote}
 
@@ -320,15 +398,16 @@ class Dashboard:
             "with_datastores": "true" if body.get("with_datastores") else "false",
             "restart": restart,
         }
-        gh.dispatch(DEPLOY_WORKFLOW, ref, inputs)
+        gh.dispatch(workflow_file(self._workflow(gh, "deploy")), ref, inputs)
         self.audit("deploy.dispatch", env.name, ref=ref, **inputs)
         return {"message": f"Deployment of {env.name} launched on GitHub ({ref}). It appears in the list within seconds."}
 
     def run_backup(self, body: dict) -> dict:
         gh = self.github()
+        workflow = workflow_file(self._workflow(gh, "backup"))
         ref = gh.default_branch()
-        gh.dispatch(BACKUP_WORKFLOW, ref, {})
-        self.audit("backup.dispatch", None, ref=ref)
+        gh.dispatch(workflow, ref, {})
+        self.audit("backup.dispatch", None, ref=ref, workflow=workflow)
         return {"message": "Player backup launched on GitHub. The file appears under GitHub backups when the run ends."}
 
     def snapshot(self, name: str, body: dict) -> dict:
@@ -472,6 +551,7 @@ def _routes(app: Dashboard) -> list[tuple[str, re.Pattern, Callable[..., Any]]]:
         ("GET", re.compile(rf"/api/env/{env}/live"), lambda p, b, env: app.live(env)),
         ("GET", re.compile(r"/api/deployments"), lambda p, b: app.deployments()),
         ("GET", re.compile(r"/api/backups"), lambda p, b: app.backups()),
+        ("GET", re.compile(r"/api/github"), lambda p, b: app.github_status()),
         ("GET", re.compile(rf"/api/env/{env}/player"), lambda p, b, env: app.player(env, q(p, "q") or "")),
         ("GET", re.compile(rf"/api/env/{env}/datastores"), lambda p, b, env: app.datastores(env, q(p, "prefix"))),
         ("GET", re.compile(rf"/api/env/{env}/entries"),

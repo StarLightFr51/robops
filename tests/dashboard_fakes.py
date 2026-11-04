@@ -110,13 +110,34 @@ class FakeWeb:
 class FakeGitHub:
     repo = "me/brick-tycoon"
 
-    def __init__(self):
+    def __init__(self, workflows=None, fail=None):
         self.dispatched: list[tuple] = []
+        self.workflow_list = workflows if workflows is not None else [
+            {"name": "CI", "path": ".github/workflows/ci.yml"},
+            {"name": "Roblox Deploy", "path": ".github/workflows/roblox-deploy.yml"},
+            {"name": "Player Backup", "path": ".github/workflows/roblox-backup.yml"},
+        ]
+        self.fail = fail or {}            # {"info": status, "workflows": status}
+        self.runs_of: list[str] = []
+
+    def _maybe_fail(self, what):
+        from robops.github import GitHubError
+        if what in self.fail:
+            raise GitHubError(self.fail[what], f"GitHub HTTP {self.fail[what]}: Not Found")
+
+    def info(self):
+        self._maybe_fail("info")
+        return {"default_branch": "main"}
 
     def default_branch(self):
-        return "main"
+        return self.info()["default_branch"]
+
+    def workflows(self):
+        self._maybe_fail("workflows")
+        return self.workflow_list
 
     def runs(self, workflow, per_page=15):
+        self.runs_of.append(workflow)
         base = [
             (9, "in_progress", None, "workflow_dispatch", "main", "Release 2.4: winter event", 300),
             (8, "completed", "success", "push", "develop", "Fix pet spawn rate", 5_400),
@@ -140,6 +161,7 @@ class FakeGitHub:
         return [{"name": "Choose the target"}, {"name": f"Publish {env}"}]
 
     def artifacts(self, per_page=100):
+        self._maybe_fail("info")               # a repository the token can't see: every endpoint fails
         return [{"id": 1, "name": "players-production-2026-11-04_0217Z.json.gz.age", "size_in_bytes": 48_211,
                  "created_at": "2026-11-04T02:18:00Z", "expires_at": "2026-12-04T02:18:00Z", "expired": False,
                  "workflow_run": {"id": 55}},
