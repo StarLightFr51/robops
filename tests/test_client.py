@@ -25,7 +25,7 @@ def test_publish_rbxl_sends_binary_and_returns_version(make_client, tmp_path):
 
 def test_publish_rbxlx_uses_xml_and_saved(make_client, tmp_path):
     place = tmp_path / "game.rbxlx"
-    place.write_text("<roblox/>")
+    place.write_text("<roblox/>", encoding="utf-8")
     client, session, _ = make_client([FakeResponse(200, {"versionNumber": 3})])
 
     client.publish_place(1, 2, place, version_type="Saved")

@@ -178,7 +178,7 @@ def test_auto_update_failure_never_raises(frozen_exe, monkeypatch):
     assert updater.maybe_auto_update(now=1, session=gh, notify=messages.append) is None
     assert frozen_exe.read_bytes() == b"MZ-old-version"
     assert "failed" in messages[0]
-    state = json.loads((frozen_exe.parent.parent / "state" / "update.json").read_text())
+    state = json.loads((frozen_exe.parent.parent / "state" / "update.json").read_text(encoding="utf-8"))
     assert state["last_check"] == 1                       # we don't retry on every command
 
 

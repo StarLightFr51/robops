@@ -28,7 +28,7 @@ file = "build/game.rbxl"
 
 def write(tmp_path, text):
     path = tmp_path / "robops.toml"
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path
 
 

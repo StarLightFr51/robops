@@ -46,7 +46,7 @@ class FakeClient:
 def project(tmp_path):
     (tmp_path / "build").mkdir()
     (tmp_path / "data").mkdir()
-    (tmp_path / "data" / "config.json").write_text(json.dumps({"motd": "Hello", "event": {"x2": True}}))
+    (tmp_path / "data" / "config.json").write_text(json.dumps({"motd": "Hello", "event": {"x2": True}}), encoding="utf-8")
     builder = f'{sys.executable} -c "open(\'build/game.rbxl\',\'wb\').write(b\'PLACE\')"'
     (tmp_path / "robops.toml").write_text(f"""
 [build]
@@ -71,7 +71,7 @@ file = "build/game.rbxl"
 [[environments.prod.datastores]]
 name = "GameConfig"
 file = "data/config.json"
-""")
+""", encoding="utf-8")
     return tmp_path
 
 
@@ -136,8 +136,8 @@ def test_metadata_failure_is_a_warning_unless_strict(project):
 
 
 def test_preflight_fails_before_any_api_call(project):
-    toml = (project / "robops.toml").read_text().replace("command = ", "# command = ")
-    (project / "robops.toml").write_text(toml)
+    toml = (project / "robops.toml").read_text(encoding="utf-8").replace("command = ", "# command = ")
+    (project / "robops.toml").write_text(toml, encoding="utf-8")
     client = FakeClient()
     with pytest.raises(DeployError, match="not found"):
         run(project, DeployOptions(), client)
@@ -145,9 +145,9 @@ def test_preflight_fails_before_any_api_call(project):
 
 
 def test_failed_build_stops_deploy(project):
-    toml = (project / "robops.toml").read_text()
+    toml = (project / "robops.toml").read_text(encoding="utf-8")
     toml = toml.replace(toml.split("\n")[2], f"command = '{sys.executable} -c \"raise SystemExit(3)\"'")
-    (project / "robops.toml").write_text(toml)
+    (project / "robops.toml").write_text(toml, encoding="utf-8")
     with pytest.raises(DeployError, match="code 3"):
         run(project, DeployOptions(), FakeClient())
 
