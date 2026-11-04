@@ -242,6 +242,12 @@ class OpenCloudClient:
             ) from exc
         return PublishResult(universe_id, place_id, version, version_type)
 
+    # -------------------------------------------------------------- Universe info
+
+    def get_universe(self, universe_id: int) -> dict:
+        """Experience settings: displayName, visibility, ageRating, devices, dates…"""
+        return self._request("GET", f"/cloud/v2/universes/{universe_id}").json()
+
     # ---------------------------------------------------------------- Places
 
     def get_place(self, universe_id: int, place_id: int) -> dict:
@@ -378,6 +384,29 @@ class OpenCloudClient:
             if not token:
                 return
             params = {**params, "pageToken": token}
+
+    def list_entries_page(
+        self,
+        universe_id: int,
+        datastore: str,
+        *,
+        scope: str | None = None,
+        prefix: str | None = None,
+        page_token: str | None = None,
+        page_size: int = 100,
+    ) -> tuple[list[str], str | None]:
+        """One page of entry identifiers + the token of the next page (None at the end)."""
+        params: dict[str, Any] = {"maxPageSize": page_size}
+        if prefix:
+            params["filter"] = f'id.startsWith("{prefix}")'
+        if page_token:
+            params["pageToken"] = page_token
+        payload = self._request(
+            "GET", self._entries_base(universe_id, datastore, scope),
+            scope="universe-datastores.objects:list", params=params,
+        ).json()
+        ids = [e.get("id") or e.get("path", "").rsplit("/", 1)[-1] for e in payload.get("dataStoreEntries", [])]
+        return ids, payload.get("nextPageToken") or None
 
     def list_datastores(self, universe_id: int, *, prefix: str | None = None) -> Iterator[str]:
         """Names of the experience's DataStores."""

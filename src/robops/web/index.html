@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>robops dashboard</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="shell">
+    <nav class="rail" aria-label="robops">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">robops</span>
+        <span class="brand-version" id="version"></span>
+      </div>
+
+      <section class="rail-block" aria-labelledby="env-heading">
+        <h2 id="env-heading" class="rail-heading">Environment</h2>
+        <div id="env-list" class="env-list" role="radiogroup" aria-labelledby="env-heading"></div>
+      </section>
+
+      <section class="rail-block" aria-label="Views">
+        <ul class="nav" id="nav">
+          <li><button type="button" data-view="overview">Live game</button></li>
+          <li><button type="button" data-view="deployments">Deployments</button></li>
+          <li><button type="button" data-view="players">Players and backups</button></li>
+          <li><button type="button" data-view="data">DataStores</button></li>
+          <li><button type="button" data-view="setup">Setup</button></li>
+        </ul>
+      </section>
+
+      <p class="rail-foot" id="rail-foot"></p>
+    </nav>
+
+    <main id="main" class="main" tabindex="-1">
+      <header class="band" id="band">
+        <div class="band-title">
+          <h1 id="band-env">…</h1>
+          <p id="band-sub" class="band-sub"></p>
+        </div>
+        <div class="band-actions" id="band-actions"></div>
+      </header>
+      <div id="view" class="view" aria-live="polite"></div>
+    </main>
+  </div>
+
+  <dialog id="modal" class="modal">
+    <form method="dialog" id="modal-form">
+      <h2 id="modal-title"></h2>
+      <div id="modal-body" class="modal-body"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="modal-cancel">Cancel</button>
+        <button type="submit" class="btn" id="modal-ok">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>

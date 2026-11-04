@@ -3,6 +3,20 @@
 All notable changes to robops. Versions follow [semantic versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH`.
 
+## 1.4.0
+
+### Added
+- `robops dashboard`: a local web dashboard served on 127.0.0.1.
+  - Live game: players, visits, likes, public servers, places, experience settings.
+  - Deployment runs from GitHub Actions.
+  - Player lookup with edit / restore / delete.
+  - Local and GitHub backups.
+  - A DataStore browser and editor.
+  - Configuration checks.
+  - Actions (deploy, restart, snapshot, backup, writes) need a confirmation with the environment name, follow
+    the CLI's player protections and are logged in `.robops/audit.log`.
+- `OpenCloudClient.get_universe` and `list_entries_page`; `robops check` now shares its checks with the dashboard.
+
 ## 1.3.0
 
 ### Changed (behaviour)
