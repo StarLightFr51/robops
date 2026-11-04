@@ -40,6 +40,11 @@ robops/
 ├── LICENSE                     # MIT
 ├── src/robops/
 │   ├── cli.py                  # commands
+│   ├── dashboard.py            # `robops dashboard`: local web server + JSON API
+│   ├── web/                    # the dashboard page (HTML, CSS, JS, bundled fonts)
+│   ├── github.py               # GitHub Actions runs, artifacts, workflow_dispatch
+│   ├── roblox_web.py           # public roblox.com stats (players, servers, users)
+│   ├── checks.py               # configuration checks (robops check, dashboard)
 │   ├── client.py               # Open Cloud client (HTTP, retries, errors)
 │   ├── config.py               # reading robops.toml
 │   ├── deploy.py               # deployment orchestration
@@ -240,6 +245,9 @@ robops ds export GameConfig --out backup.json --env production
 robops ds import GameConfig data/config.json --env production --dry-run
 robops ds delete GameConfig old_key --env staging
 robops ds snapshot --env production
+
+# Everything above, in a web page
+robops dashboard
 ```
 
 Exit codes: `0` success, `1` Roblox/deployment failure, `2` configuration or usage error. An unexpected error prints a one-line message; `ROBOPS_DEBUG=1` shows the full Python traceback.
@@ -247,6 +255,32 @@ Exit codes: `0` success, `1` Roblox/deployment failure, `2` configuration or usa
 Publishing a place is never retried after a network error or a 5xx answer once the file may have reached Roblox (that would create a second version): the message then asks you to check the place's version history.
 
 The API key is **never** passed as an argument (it would show up in logs): it is read from the variable named by `api_key_env`.
+
+## Web dashboard
+
+```powershell
+$env:ROBLOX_API_KEY = "your-key"
+$env:ROBOPS_GITHUB_TOKEN = "github_pat_..."   # optional, see below
+robops dashboard
+```
+
+Run it from your game's folder (where `robops.toml` is): it opens a page in your browser, served by robops on your own PC (`http://127.0.0.1:8765`). Keep the terminal open; `Ctrl+C` stops it.
+
+| View | What you see | What you can do |
+|---|---|---|
+| **Live game** | players online, visits, favorites, likes, each public server as a brick filled with its players, places and their last update, experience settings, last deployment | restart the servers, launch a deployment |
+| **Deployments** | the latest runs of the *Roblox Deploy* workflow: target, status, branch and commit, author, duration (refreshed every 10 s while one is running) | launch a deployment (branch, version type, servers, DataStores) |
+| **Players and backups** | search by UserId or username: avatar, online/offline, profile data; local backups and the nightly GitHub backups | edit a player's data (changed fields shown first), restore them from a backup, delete their profile, run a backup now |
+| **DataStores** | every DataStore of the experience, its keys (prefix, scope), each value with its revision and metadata | create, edit or delete a key, take a snapshot |
+| **Setup** | the result of `robops check` for each environment, GitHub repository and token | — |
+
+Every button opens a confirmation in the environment's colour (production in orange, staging in teal). For an environment whose name contains `prod` or `live`, you have to type its name; deleting a player also asks for the UserId. The player protections of the CLI apply: no write to an online player (unless you tick *force*), conditional write (etag), and a copy of the profile in `.robops/safety/` before any change. Every action is appended to `.robops/audit.log`.
+
+**GitHub.** Deployments and GitHub backups come from the repository of the `origin` git remote (or `--github-repo owner/name`). For a private repository, set `ROBOPS_GITHUB_TOKEN` to a fine-grained token on that repository with **Actions: Read** (and **Read and write** for the *Deploy* and *Back up now* buttons). Without a token, these two parts only work for a public repository; the rest of the dashboard does not need GitHub.
+
+**Security.** The server only answers on `127.0.0.1`, refuses any other `Host` (DNS rebinding) or foreign `Origin`, and every request must carry the random session key contained in the link printed at startup: another website open in your browser can neither read the data nor press a button. The page loads nothing from the internet except avatars (`rbxcdn.com`). Don't share the link while the dashboard runs.
+
+Options: `--port 9000`, `--no-browser`, `--github-repo owner/name`. Live player counts come from roblox.com's public API; for a multi-place experience, Roblox only counts the players of the start place there.
 
 ## Player data (ProfileStore / DataService)
 

@@ -26,7 +26,7 @@ where = ["src"]
 version = { attr = "robops.__version__" }
 
 [tool.setuptools.package-data]
-robops = ["templates/*"]
+robops = ["templates/*", "web/*", "web/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -46,4 +46,4 @@ warn_unused_ignores = true
 
 [tool.ruff.lint.isort]
 known-first-party = ["robops"]
-known-local-folder = ["conftest", "test_updater"]
+known-local-folder = ["conftest", "test_updater", "test_players", "dashboard_fakes"]
