@@ -9,7 +9,7 @@
 #  The live game therefore never updates on its own: you are the one who clicks.
 #
 #  The robops action is loaded from the "uses:" lines below:
-#    • YOUR-ACCOUNT/robops@main  → robops lives in its own GitHub repository
+#    • YOUR-ACCOUNT/robops@v<version> → robops lives in its own GitHub repository (pin a tag, not @main)
 #      (if it is private: in that robops repository, Settings → Actions → General →
 #      Access → "Accessible from repositories owned by the user …")
 #    • ./tools/robops            → the robops folder is copied into this game repository
@@ -99,6 +99,12 @@ jobs:
     name: Publish ${{ needs.target.outputs.environment }}
     needs: target
     runs-on: ubuntu-latest
+    # Recommended if your GitHub plan allows it (public repository; for a private one, environment
+    # secrets need GitHub Pro/Team and required reviewers GitHub Enterprise): create "staging" and
+    # "production" in Settings → Environments, move ROBLOX_API_KEY_PRODUCTION into the production
+    # environment's secrets, add "Required reviewers", then uncomment the next line. The production
+    # key is then only readable by a run that someone has approved.
+    # environment: ${{ needs.target.outputs.environment }}
     concurrency:
       group: roblox-deploy-${{ needs.target.outputs.environment }}
       cancel-in-progress: false        # never cut off a publish that is in progress

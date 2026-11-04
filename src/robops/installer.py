@@ -14,7 +14,6 @@ import argparse
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -29,15 +28,19 @@ def _say(msg: str = "") -> None:
     print(msg, flush=True)
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _launched_by_double_click() -> bool:
     """True if the console was created for us (double-click): we wait before closing it."""
-    if os.name != "nt":
+    if not _is_windows():
         return False
     try:
         import ctypes
         processes = (ctypes.c_uint * 4)()
-        return ctypes.windll.kernel32.GetConsoleProcessList(processes, 4) <= 1
-    except Exception:
+        return ctypes.windll.kernel32.GetConsoleProcessList(processes, 4) <= 1  # type: ignore[attr-defined,unused-ignore]
+    except Exception:  # noqa: BLE001 — cosmetic, must never fail
         return False
 
 
@@ -84,7 +87,7 @@ def install(install_dir: Path, *, force: bool = False, session: requests.Session
 
     _say()
     _say(f"{path_note}, then type:  robops --version")
-    _say("Later updates will install automatically (checked once a day).")
+    _say("robops checks for new versions once a day and tells you; install them with:  robops self-update")
     return 0
 
 
@@ -108,33 +111,86 @@ def install_local(exe: Path, install_dir: Path, *, setup_exe: Path | None = None
     return winsetup.add_to_user_path(install_dir, reg)
 
 
+def _installed_files(install_dir: Path) -> list[Path]:
+    """Files that robops itself puts in its folder: the only ones uninstalling deletes."""
+    names = (updater.EXE_NAME, updater.SETUP_NAME)
+    found = [install_dir / name for name in names]
+    for name in names:
+        found += install_dir.glob(name + ".old*")               # left behind by an update
+    found += install_dir.glob(".robops-new.exe")                # exe/build.py --install
+    found += install_dir.glob(".download-*")                    # interrupted install
+    found += install_dir.glob(".robops-update-*")               # interrupted update
+    return [p for p in found if p.exists()]
+
+
+def _remove(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _delete_after_exit(files: list[Path], install_dir: Path) -> None:
+    """A running .exe cannot delete itself: cmd does it a few seconds after we exit.
+
+    The command line is passed as a string: given a list, Python would escape the
+    quotes as \\" (C runtime rules), which cmd.exe does not understand.
+    """
+    deletions = " & ".join(f'del /f /q "{f}"' for f in files)
+    # rmdir without /s: the folder only disappears if it is empty (user files are kept).
+    command = f'cmd /c ping 127.0.0.1 -n 4 > nul & {deletions} & rmdir "{install_dir}"'
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    subprocess.Popen(command, creationflags=flags, close_fds=True)
+
+
 def uninstall(install_dir: Path, *, reg: Any = None) -> int:
     _say(f"Uninstalling robops ({install_dir}) …")
     if winsetup.remove_from_user_path(install_dir, reg):
         _say("✔ Removed from PATH")
     winsetup.unregister_uninstall(reg)
-    shutil.rmtree(updater.state_dir(), ignore_errors=True)
+    state = updater.state_dir()
+    (state / "update.json").unlink(missing_ok=True)
+    try:
+        state.rmdir()
+    except OSError:
+        pass
 
-    running_inside = False
-    if updater.is_frozen():
+    me = updater.current_executable() if updater.is_frozen() else None
+    later: list[Path] = []
+    for path in _installed_files(install_dir):
+        if me is not None and _is_windows() and path.resolve() == me:
+            later.append(path)
+        else:
+            _remove(path)
+
+    stuck = [p for p in _installed_files(install_dir) if p not in later]
+    if later:
+        _delete_after_exit(later, install_dir)
+    elif not stuck:
         try:
-            updater.current_executable().relative_to(install_dir.resolve())
-            running_inside = True
-        except ValueError:
+            install_dir.rmdir()          # only if empty: never delete files we did not create
+        except OSError:
             pass
-
-    if running_inside and os.name == "nt":
-        # A running .exe cannot delete itself:
-        # we hand the folder deletion over to cmd, a few seconds after we exit.
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.Popen(
-            ["cmd", "/c", f'ping 127.0.0.1 -n 4 > nul & rmdir /s /q "{install_dir}"'],
-            creationflags=flags, close_fds=True,
-        )
-    else:
-        shutil.rmtree(install_dir, ignore_errors=True)
+    if stuck:
+        _say(f"⚠ Could not delete {', '.join(p.name for p in stuck)} (robops still running?): "
+             "close it and run the uninstall again.")
+    elif install_dir.exists() and not later:
+        _say(f"  {install_dir} kept: it contains files that robops did not create.")
     _say("✔ robops has been uninstalled.")
     return 0
+
+
+def _default_install_dir() -> Path:
+    """Folder to act on without --dir: the one of this setup if it is an installed copy
+    (uninstall from "Apps & features" of an older version), otherwise the default."""
+    if updater.is_frozen():
+        me = updater.current_executable()
+        if me.name.lower() == updater.SETUP_NAME and (me.parent / updater.EXE_NAME).is_file():
+            return me.parent
+    return winsetup.default_install_dir()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -149,12 +205,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--quiet", action="store_true", help="do not wait for Enter at the end")
     args = parser.parse_args(argv)
 
-    install_dir = (args.dir or winsetup.default_install_dir()).expanduser()
+    install_dir = (args.dir or _default_install_dir()).expanduser()
     try:
         if args.uninstall:
             code = uninstall(install_dir)
         else:
-            if os.name != "nt":
+            if not _is_windows():
                 _say("⚠ This installer is designed for Windows (PATH via the user registry).")
                 return 1
             code = install(install_dir, force=args.force)

@@ -34,11 +34,12 @@ import gzip
 import json
 import os
 import time
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, TypeGuard, TypeVar
 
 from .client import OpenCloudClient, RobloxApiError
 
@@ -82,7 +83,7 @@ class SessionState:
 
 # ------------------------------------------------------------------ reading
 
-def is_profile(value: Any) -> bool:
+def is_profile(value: Any) -> TypeGuard[dict]:
     return isinstance(value, dict) and "Data" in value and isinstance(value.get("MetaData"), dict)
 
 
@@ -188,6 +189,7 @@ def parse_value(text: str) -> Any:
 def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ()) -> Any:
     """Applies `path.to.field=value` edits to a copy of Data."""
     result = copy.deepcopy(data) if isinstance(data, dict) else {}
+    node: Any
     for item in sets:
         if "=" not in item:
             raise PlayerError(f"--set expects path=value (got: {item!r}).")
@@ -205,6 +207,8 @@ def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ())
         node[parts[-1]] = parse_value(raw)
     for path in unsets:
         parts = [p for p in path.strip().split(".") if p]
+        if not parts:
+            raise PlayerError(f"Empty path in --unset {path!r}.")
         node = result
         for part in parts[:-1]:
             node = node.get(part) if isinstance(node, dict) else None
@@ -239,7 +243,7 @@ def save_safety_copy(directory: Path, cfg: PlayersConfig, user_id: str, current:
     if not current.exists:
         return None
     directory.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = directory / f"{cfg.key(user_id)}-{stamp}.json"
     n = 2
     while path.exists():  # two writes in the same second: never overwrite a copy
@@ -292,8 +296,11 @@ def _open_text(path: Path, mode: str):
     return open(path, mode, encoding="utf-8")
 
 
-def _chunks(items: Iterator[str], size: int) -> Iterator[list[str]]:
-    chunk: list[str] = []
+_T = TypeVar("_T")
+
+
+def _chunks(items: Iterator[_T], size: int) -> Iterator[list[_T]]:
+    chunk: list[_T] = []
     for item in items:
         chunk.append(item)
         if len(chunk) >= size:
@@ -334,7 +341,7 @@ def guess_prefix(keys: Iterable[str]) -> str | None:
         stripped = key.rstrip("0123456789")
         if stripped != key:                      # the key does end with a number
             counts[stripped] = counts.get(stripped, 0) + 1
-    return max(counts, key=counts.get) if counts else None
+    return max(counts, key=lambda k: counts[k]) if counts else None
 
 
 def backup_players(
@@ -369,7 +376,7 @@ def backup_players(
 
     header = {
         "format": BACKUP_FORMAT,
-        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "universe_id": universe_id,
         "datastore": cfg.datastore,
         "key_prefix": cfg.key_prefix,
@@ -415,11 +422,14 @@ def backup_players(
     return BackupResult(out_path, count, errors, other_count, others)
 
 
-def load_backup(path: Path, cfg: PlayersConfig) -> dict[str, dict]:
+def load_backup(path: Path, cfg: PlayersConfig, *, universe_id: int | None = None,
+                allow_other_universe: bool = False) -> dict[str, dict]:
     """Loads a backup → {user_id: {"value": profile, "users": [...]}}.
 
     Accepts the format of `robops player backup` and that of `robops ds export`
-    ({"PLAYER_123": profile, ...}).
+    ({"PLAYER_123": profile, ...}). A `player backup` file records its universe:
+    restoring it into another one (e.g. a staging backup into production) is
+    refused unless allow_other_universe.
     """
     path = Path(path)
     if not path.is_file():
@@ -434,6 +444,14 @@ def load_backup(path: Path, cfg: PlayersConfig) -> dict[str, dict]:
             raise PlayerError(
                 f"This backup comes from {raw.get('datastore')}/{raw.get('key_prefix')}* "
                 f"but the target is {cfg.datastore}/{cfg.key_prefix}*: check the [players] config."
+            )
+        source = raw.get("universe_id")
+        if universe_id is not None and source is not None and str(source) != str(universe_id) \
+                and not allow_other_universe:
+            raise PlayerError(
+                f"This backup comes from universe {source}, but the target is universe {universe_id} "
+                "(e.g. a staging backup restored into production?). If that is intended, "
+                "add --allow-other-universe."
             )
         return raw.get("profiles") or {}
     if isinstance(raw, dict):

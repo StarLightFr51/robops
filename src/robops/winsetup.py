@@ -84,10 +84,10 @@ def broadcast_environment_change() -> None:
         from ctypes import wintypes
 
         result = wintypes.DWORD()
-        ctypes.windll.user32.SendMessageTimeoutW(
+        ctypes.windll.user32.SendMessageTimeoutW(  # type: ignore[attr-defined,unused-ignore]
             0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, ctypes.byref(result)
         )
-    except Exception:  # purely cosmetic: must never make the installation fail
+    except Exception:  # noqa: BLE001 — purely cosmetic: must never make the installation fail
         pass
 
 
@@ -103,8 +103,9 @@ def register_uninstall(install_dir: Path, version: str, setup_exe: Path, reg: An
         "Publisher": (winreg.REG_SZ, "robops"),
         "InstallLocation": (winreg.REG_SZ, str(install_dir)),
         "DisplayIcon": (winreg.REG_SZ, str(exe)),
-        "UninstallString": (winreg.REG_SZ, f'"{setup_exe}" --uninstall'),
-        "QuietUninstallString": (winreg.REG_SZ, f'"{setup_exe}" --uninstall --quiet'),
+        # --dir is passed explicitly: the folder may differ from the default one (setup --dir).
+        "UninstallString": (winreg.REG_SZ, f'"{setup_exe}" --uninstall --dir "{install_dir}"'),
+        "QuietUninstallString": (winreg.REG_SZ, f'"{setup_exe}" --uninstall --dir "{install_dir}" --quiet'),
         "NoModify": (winreg.REG_DWORD, 1),
         "NoRepair": (winreg.REG_DWORD, 1),
         "EstimatedSize": (winreg.REG_DWORD, int(size_kb)),

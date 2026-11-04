@@ -15,15 +15,17 @@ called at all in --dry-run.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import output as out
 from .client import OpenCloudClient, RobloxApiError
-from .config import DatastoreSeed, Environment
+from .config import DatastoreSeed, Environment, PlaceConfig
 
 
 class DeployError(Exception):
@@ -61,22 +63,35 @@ class DeployReport:
     datastore_writes: int = 0
     restarted: bool = False
     restart_planned: bool = False
+    error: str | None = None              # set when the deployment stopped halfway
 
     def versions(self) -> dict[str, int | None]:
         return {p.name: p.version for p in self.places}
 
+    def published(self) -> list[PlaceOutcome]:
+        return [p for p in self.places if p.version is not None]
+
     def to_markdown(self) -> str:
-        mode = " (dry-run)" if self.dry_run else ""
+        mode = " (dry-run)" if self.dry_run else (" — ❌ failed" if self.error else "")
         lines = [
             f"### 🚀 Roblox deployment — `{self.environment}`{mode}",
             "",
             f"Universe `{self.universe_id}` · version type **{self.version_type}**",
             "",
+        ]
+        if self.error:
+            first_line = self.error.splitlines()[0] if self.error else ""
+            live = ", ".join(f"{p.name} v{p.version}" for p in self.published()) or "nothing"
+            lines += [f"> **Error:** {first_line}", ">", f"> Already live before the failure: **{live}**.", ""]
+        lines += [
             "| Place | Place ID | File | Size | Version | Metadata |",
             "|---|---|---|---|---|---|",
         ]
         for p in self.places:
-            version = f"v{p.version}" if p.version is not None else "—"
+            if p.version is not None:
+                version = f"v{p.version}"
+            else:
+                version = "not published" if self.error else "—"
             lines.append(
                 f"| {p.name} | `{p.place_id}` | `{p.file.name}` | {_human(p.size)} | {version} | {p.metadata} |"
             )
@@ -101,13 +116,25 @@ def _human(size: int) -> str:
 
 # ------------------------------------------------------------------ helpers
 
+def build_argv(command: str, *, windows: bool | None = None) -> str | list[str]:
+    """Command for subprocess.run, without a shell.
+
+    On Windows the string is passed as is (CreateProcess parses it itself): POSIX
+    shlex.split would eat the backslashes of paths (build\\game.rbxl → buildgame.rbxl).
+    """
+    if (os.name == "nt") if windows is None else windows:
+        return command
+    return shlex.split(command)
+
+
 def run_build(command: str, cwd: Path) -> None:
     out.info(f"$ {command}")
     try:
-        completed = subprocess.run(shlex.split(command), cwd=cwd)
+        completed = subprocess.run(build_argv(command), cwd=cwd)
     except FileNotFoundError as exc:
+        program = exc.filename or command.split()[0]
         raise DeployError(
-            f"Build command not found: {exc.filename}. "
+            f"Build command not found: {program}. "
             "Install it (e.g. Rojo via Rokit) or use --skip-build."
         ) from exc
     if completed.returncode != 0:
@@ -140,18 +167,21 @@ def overwrite_entry(
 
     The Open Cloud API erases users and attributes if they are not sent back
     along with the new value; so we read them first (a missing entry is created).
+    The write is conditioned on the etag that was read: if a game server changes
+    the entry in between, Roblox refuses the update instead of losing one of them.
     """
-    users = attributes = None
+    users = attributes = etag = None
     if preserve_metadata:
         try:
             current = client.get_entry(universe_id, datastore, key, scope=scope)
             users = current.get("users") or None
             attributes = current.get("attributes") or None
+            etag = current.get("etag") or None
         except RobloxApiError as exc:
             if exc.status != 404:
                 raise
     return client.set_entry(
-        universe_id, datastore, key, value, scope=scope, users=users, attributes=attributes
+        universe_id, datastore, key, value, scope=scope, users=users, attributes=attributes, etag=etag
     )
 
 
@@ -178,7 +208,26 @@ def deploy(
 
     report = DeployReport(env.name, env.universe_id, version_type, opts.dry_run)
     report.restart_planned = restart and version_type == "Published"
+    try:
+        _run_steps(env, opts, places, report, version_type, restart, project_root, client_factory)
+    except Exception as exc:
+        # The caller can still publish what happened (places already live…).
+        report.error = exc.describe() if isinstance(exc, RobloxApiError) else str(exc)
+        exc.deploy_report = report  # type: ignore[attr-defined]
+        raise
+    return report
 
+
+def _run_steps(
+    env: Environment,
+    opts: DeployOptions,
+    places: list[PlaceConfig],
+    report: DeployReport,
+    version_type: str,
+    restart: bool,
+    project_root: Path,
+    client_factory: Callable[[], OpenCloudClient],
+) -> None:
     # 1. Build
     if env.build_command and not opts.skip_build:
         with out.group("Build"):
@@ -213,19 +262,19 @@ def deploy(
             + (f", {sum(len(d) for _, d in seeds)} DataStore entries overwritten" if seeds else "")
             + (", then the servers restarted." if report.restart_planned else ".")
         )
-        return report
+        return
 
     client = client_factory()
 
     # 3. Publishing
     with out.group(f"Publishing ({version_type})"):
-        for outcome, place in zip(report.places, places):
+        for outcome, place in zip(report.places, places, strict=True):
             result = client.publish_place(env.universe_id, place.place_id, place.file, version_type=version_type)
             outcome.version = result.version_number
             out.success(f"{place.name}: version {result.version_number} ({version_type})")
 
     # 4. Metadata
-    meta_places = [(o, p) for o, p in zip(report.places, places) if p.has_metadata]
+    meta_places = [(o, p) for o, p in zip(report.places, places, strict=True) if p.has_metadata]
     if meta_places:
         with out.group("Place metadata"):
             for outcome, place in meta_places:
@@ -268,5 +317,3 @@ def deploy(
                 client.restart_servers(env.universe_id)
                 report.restarted = True
                 out.success("Server restart requested.")
-
-    return report

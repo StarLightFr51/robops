@@ -18,8 +18,9 @@ def ensure_utf8_output() -> None:
     is redirected to a file or a pipe in cp1252."""
     for stream in (sys.stdout, sys.stderr):
         try:
-            if (stream.encoding or "").lower().replace("-", "") != "utf8":
-                stream.reconfigure(encoding="utf-8", errors="replace")
+            reconfigure = getattr(stream, "reconfigure", None)   # absent on some replaced streams
+            if reconfigure and (stream.encoding or "").lower().replace("-", "") != "utf8":
+                reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
 

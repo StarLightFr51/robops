@@ -98,7 +98,7 @@ def test_install_then_uninstall(setup_env, monkeypatch, capsys):
     assert reg.path()[0] == rf"C:\Tools;{install_dir}"
     entry = reg.keys[(HKCU, winsetup.UNINSTALL_KEY)]
     assert entry["DisplayVersion"] == ("2.3.0", FakeWinreg.REG_SZ)
-    assert entry["UninstallString"][0] == f'"{install_dir / "robops-setup.exe"}" --uninstall'
+    assert entry["UninstallString"][0] == f'"{install_dir / "robops-setup.exe"}" --uninstall --dir "{install_dir}"'
     assert not list(install_dir.glob(".download-*"))
     out = capsys.readouterr().out
     assert "NEW terminal" in out and "SHA-256 checksum verified" in out
@@ -164,3 +164,86 @@ def test_install_local_build(tmp_path):
     assert installer.install_local(dist / "robops.exe", install_dir, reg=reg) is False
     assert (install_dir / "robops.exe").read_bytes() == b"MZ-local-v2"
     assert sorted(p.name for p in install_dir.iterdir()) == ["robops-setup.exe", "robops.exe"]
+
+
+def test_uninstall_keeps_files_robops_did_not_create(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ROBOPS_STATE_DIR", str(tmp_path / "state"))
+    install_dir = tmp_path / "Users" / "me"          # e.g. setup --uninstall --dir C:\Users\me
+    install_dir.mkdir(parents=True)
+    for name in ("robops.exe", "robops-setup.exe", "robops.exe.old-123", "notes.txt"):
+        (install_dir / name).write_bytes(b"x")
+    (install_dir / "Documents").mkdir()
+    (install_dir / "Documents" / "thesis.docx").write_bytes(b"precious")
+
+    assert installer.uninstall(install_dir, reg=FakeWinreg("")) == 0
+
+    assert sorted(p.name for p in install_dir.iterdir()) == ["Documents", "notes.txt"]
+    assert (install_dir / "Documents" / "thesis.docx").read_bytes() == b"precious"
+    assert "kept" in capsys.readouterr().out
+
+
+def test_uninstall_running_setup_deletes_itself_after_exit(tmp_path, monkeypatch):
+    install_dir = tmp_path / "Programs" / "robops"
+    install_dir.mkdir(parents=True)
+    (install_dir / "robops.exe").write_bytes(b"x")
+    me = install_dir / "robops-setup.exe"
+    me.write_bytes(b"x")
+    monkeypatch.setenv("ROBOPS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(me))
+    monkeypatch.setattr(installer, "_is_windows", lambda: True)
+    launched = []
+    monkeypatch.setattr(installer.subprocess, "Popen", lambda cmd, **kw: launched.append(cmd))
+
+    assert installer.uninstall(install_dir, reg=FakeWinreg("")) == 0
+
+    assert not (install_dir / "robops.exe").exists()      # deleted right away
+    assert me.exists()                                    # still running: deleted by cmd
+    (command,) = launched
+    assert isinstance(command, str)                       # a list would break cmd.exe's quoting
+    assert f'del /f /q "{me}"' in command
+    assert f'rmdir "{install_dir}"' in command and "/s" not in command
+
+
+def test_setup_without_dir_targets_its_own_folder(tmp_path, monkeypatch):
+    install_dir = tmp_path / "D" / "tools"
+    install_dir.mkdir(parents=True)
+    (install_dir / "robops.exe").write_bytes(b"x")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(install_dir / "robops-setup.exe"))
+    assert installer._default_install_dir() == install_dir
+
+    # Launched from Downloads (no robops.exe next to it): default folder
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "Downloads" / "robops-setup.exe"))
+    assert installer._default_install_dir() == winsetup.default_install_dir()
+
+
+def test_setup_main_install_refuses_outside_windows(monkeypatch, capsys):
+    monkeypatch.setattr(installer, "_is_windows", lambda: False)
+    assert installer.main(["--quiet"]) == 1
+    assert "designed for Windows" in capsys.readouterr().out
+
+
+def test_setup_main_uninstall_with_dir(tmp_path, monkeypatch, capsys):
+    reg = FakeWinreg(r"C:\Tools")
+    monkeypatch.setattr(winsetup, "_winreg", lambda r=None: reg)
+    monkeypatch.setenv("ROBOPS_STATE_DIR", str(tmp_path / "state"))
+    install_dir = tmp_path / "custom"
+    install_dir.mkdir()
+    (install_dir / "robops.exe").write_bytes(b"x")
+    winsetup.add_to_user_path(install_dir, reg)
+
+    assert installer.main(["--uninstall", "--dir", str(install_dir), "--quiet"]) == 0
+    assert not install_dir.exists()
+    assert reg.path()[0] == r"C:\Tools"
+    assert "uninstalled" in capsys.readouterr().out
+
+
+def test_setup_main_reports_github_errors(monkeypatch, capsys):
+    monkeypatch.setattr(installer, "_is_windows", lambda: True)
+
+    def fail(*a, **kw):
+        raise updater.UpdateError("No release found")
+    monkeypatch.setattr(installer, "install", fail)
+    assert installer.main(["--quiet"]) == 1
+    assert "✖ No release found" in capsys.readouterr().out

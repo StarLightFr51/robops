@@ -33,8 +33,9 @@ class FakeClient:
             return self.existing[key]
         raise RobloxApiError(404, "not found")
 
-    def set_entry(self, universe_id, ds, key, value, scope=None, users=None, attributes=None):
+    def set_entry(self, universe_id, ds, key, value, scope=None, users=None, attributes=None, etag=None):
         self.calls.append(("set_entry", ds, key, value, users, attributes))
+        self.etags = getattr(self, "etags", []) + [etag]
         return {"revisionId": "r"}
 
     def restart_servers(self, universe_id):
@@ -80,7 +81,8 @@ def run(project, opts, client):
 
 
 def test_full_deploy_runs_every_step_in_order(project):
-    client = FakeClient(existing_entries={"motd": {"value": "old", "users": ["users/1"], "attributes": {"a": 1}}})
+    client = FakeClient(existing_entries={"motd": {"value": "old", "users": ["users/1"], "attributes": {"a": 1},
+                                                   "etag": "e1"}})
 
     report = run(project, DeployOptions(with_datastores=True), client)
 
@@ -91,6 +93,7 @@ def test_full_deploy_runs_every_step_in_order(project):
     # existing users/attributes kept, missing entry created without metadata
     assert client.calls[4] == ("set_entry", "GameConfig", "motd", "Hello", ["users/1"], {"a": 1})
     assert client.calls[5] == ("set_entry", "GameConfig", "event", {"x2": True}, None, None)
+    assert client.etags == ["e1", None]            # conditioned on what was read
     assert report.datastore_writes == 2 and report.restarted
     assert "| main | `20` |" in report.to_markdown()
 
@@ -147,3 +150,25 @@ def test_failed_build_stops_deploy(project):
     (project / "robops.toml").write_text(toml)
     with pytest.raises(DeployError, match="code 3"):
         run(project, DeployOptions(), FakeClient())
+
+
+def test_partial_failure_keeps_a_report_of_what_is_live(project):
+    class FailsOnLobby(FakeClient):
+        def publish_place(self, universe_id, place_id, path, version_type):
+            if place_id == 21:
+                raise RobloxApiError(500, "Internal error")
+            return super().publish_place(universe_id, place_id, path, version_type)
+
+    with pytest.raises(RobloxApiError) as err:
+        run(project, DeployOptions(), FailsOnLobby())
+    report = err.value.deploy_report
+    assert report.versions() == {"main": 101, "lobby": None}
+    text = report.to_markdown()
+    assert "failed" in text and "Already live before the failure: **main v101**" in text
+    assert "| lobby | `21` |" in text and "not published" in text
+
+
+def test_build_command_keeps_windows_backslashes():
+    from robops.deploy import build_argv
+    assert build_argv(r"rojo build -o build\game.rbxl", windows=True) == r"rojo build -o build\game.rbxl"
+    assert build_argv("rojo build -o 'my game.rbxl'", windows=False) == ["rojo", "build", "-o", "my game.rbxl"]

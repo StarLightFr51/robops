@@ -63,6 +63,8 @@ def test_apply_edits_and_changed_fields():
     assert pl.changed_fields(data, new) == ["~ coins", "+ deep", "+ inventory", "- old", "~ stats.level", "+ title"]
     with pytest.raises(pl.PlayerError):
         pl.apply_edits({}, ["no_equals_sign"])
+    with pytest.raises(pl.PlayerError, match="Empty path"):
+        pl.apply_edits({"a": 1}, [], [""])
 
 
 def test_load_backup_formats(tmp_path):
@@ -76,6 +78,17 @@ def test_load_backup_formats(tmp_path):
                                   "profiles": {}}))
     with pytest.raises(pl.PlayerError, match="Other"):
         pl.load_backup(native, cfg)
+
+
+def test_load_backup_refuses_another_universe(tmp_path):
+    cfg = pl.PlayersConfig()
+    native = tmp_path / "b.json"
+    native.write_text(json.dumps({"format": pl.BACKUP_FORMAT, "universe_id": 111, "datastore": "Default",
+                                  "key_prefix": "PLAYER_", "profiles": {"1": {"value": {}}}}))
+    assert list(pl.load_backup(native, cfg, universe_id=111)) == ["1"]
+    with pytest.raises(pl.PlayerError, match="universe 111.*universe 222"):
+        pl.load_backup(native, cfg, universe_id=222)
+    assert list(pl.load_backup(native, cfg, universe_id=222, allow_other_universe=True)) == ["1"]
 
 
 # ------------------------------------------------------------- fake DataStore
@@ -351,3 +364,20 @@ file = "game.rbxl"
 
 def test_guess_prefix_ignores_scope():
     assert pl.guess_prefix(["global/PLAYER_4681560223", "global/PLAYER_522534348"]) == "PLAYER_"
+
+
+def test_restore_all_does_not_resurrect_deleted_profiles(store, capsys):
+    with open("b.json", "w") as fh:
+        json.dump({k: profile({"coins": 1}) for k in ("PLAYER_1", "PLAYER_3", "PLAYER_9")}, fh)
+    assert run("restore", "--all", "--from", "b.json", "--yes") == 0
+    assert sorted(p[0] for p in store.patches) == ["PLAYER_1", "PLAYER_3"]     # 9 was deleted since
+    assert "1 skipped (no current profile)" in capsys.readouterr().out
+
+    assert run("restore", "--all", "--from", "b.json", "--yes", "--recreate-missing") == 0
+    assert "PLAYER_9" in [p[0] for p in store.patches]
+
+
+def test_restore_refuses_backup_from_another_universe(store, tmp_path, capsys):
+    assert run("backup", "--out", "b.json") == 0                 # universe 99
+    assert cli.main(["player", "restore", "1", "--from", "b.json", "--universe-id", "100"]) == 1
+    assert "allow-other-universe" in capsys.readouterr().err

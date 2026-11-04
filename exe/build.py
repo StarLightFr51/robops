@@ -57,7 +57,7 @@ def main() -> int:
         parser.error("--repo must be of the form owner/name")
     if args.install and os.name != "nt":
         parser.error("--install only works on Windows")
-    if sys.version_info < (3, 11):
+    if sys.version_info < (3, 11):  # noqa: UP036 — this script may be run by an older Python
         parser.error("Python 3.11 or newer is required")
 
     # 0. Build tools.

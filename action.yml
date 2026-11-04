@@ -50,6 +50,9 @@ outputs:
   environment:
     description: Deployed environment
     value: ${{ steps.deploy.outputs.environment }}
+  failed:
+    description: '"true" if the deployment stopped halfway (versions then lists what is already live)'
+    value: ${{ steps.deploy.outputs.failed }}
 
 runs:
   using: composite
@@ -78,6 +81,7 @@ runs:
         IN_DRY_RUN: ${{ inputs.dry-run }}
       run: |
         set -euo pipefail
+        set -f            # no glob expansion of the place names below
         args=(deploy "$IN_ENVIRONMENT" --config "$IN_CONFIG")
         [ -n "$IN_VERSION_TYPE" ] && args+=(--version-type "$IN_VERSION_TYPE")
         for place in $IN_PLACES; do args+=(--place "$place"); done

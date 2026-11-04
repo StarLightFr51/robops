@@ -7,7 +7,9 @@ Covers what a deployment pipeline needs:
   - standard DataStores (read, overwrite, delete, list, snapshot)
 
 All requests go through `_request`, which handles retries (429 / 5xx)
-with exponential backoff and honours the Retry-After header.
+with exponential backoff and honours the Retry-After header (capped).
+Non-idempotent requests (publishing a place) are only retried when Roblox
+certainly did not process them, so that a retry never creates a second version.
 """
 
 from __future__ import annotations
@@ -15,9 +17,10 @@ from __future__ import annotations
 import json
 import random
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from urllib.parse import quote
 
 import requests
@@ -26,6 +29,9 @@ from . import __version__
 
 BASE_URL = "https://apis.roblox.com"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# Statuses meaning "not processed": the only ones retried for a non-idempotent request.
+RETRYABLE_STATUS_NON_IDEMPOTENT = {429, 503}
+MAX_RETRY_AFTER = 60.0     # seconds: a huge Retry-After must not block a CI job for an hour
 
 # Hints displayed along with the most common HTTP errors.
 STATUS_HINTS = {
@@ -136,8 +142,10 @@ class OpenCloudClient:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         ok_statuses: tuple[int, ...] = (200,),
+        idempotent: bool = True,
     ) -> requests.Response:
         url = f"{self.base_url}{path}"
+        retryable = RETRYABLE_STATUS if idempotent else RETRYABLE_STATUS_NON_IDEMPOTENT
         attempt = 0
         while True:
             attempt += 1
@@ -152,15 +160,22 @@ class OpenCloudClient:
                     timeout=self.timeout,
                 )
             except requests.RequestException as exc:
-                if attempt > self.max_retries:
-                    raise RobloxApiError(0, str(exc), scope=scope) from exc
+                # A connect timeout means nothing was sent; any other network error may
+                # happen after Roblox received (and applied) the request.
+                safe = idempotent or isinstance(exc, requests.ConnectTimeout)
+                if attempt > self.max_retries or not safe:
+                    message = str(exc)
+                    if not safe:
+                        message += (" — the request may have been applied anyway: check the place's "
+                                    "version history before publishing again")
+                    raise RobloxApiError(0, message, scope=scope) from exc
                 self._sleep(self._backoff(attempt, None))
                 continue
 
             if response.status_code in ok_statuses:
                 return response
 
-            if response.status_code in RETRYABLE_STATUS and attempt <= self.max_retries:
+            if response.status_code in retryable and attempt <= self.max_retries:
                 self._sleep(self._backoff(attempt, response.headers.get("Retry-After")))
                 continue
 
@@ -174,7 +189,7 @@ class OpenCloudClient:
     def _backoff(self, attempt: int, retry_after: str | None) -> float:
         if retry_after:
             try:
-                return max(float(retry_after), 0.0)
+                return min(max(float(retry_after), 0.0), MAX_RETRY_AFTER)
             except ValueError:
                 pass
         return self.backoff_base * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
@@ -217,6 +232,7 @@ class OpenCloudClient:
             params={"versionType": version_type},
             data=payload,
             headers={"Content-Type": content_type},
+            idempotent=False,          # each accepted request creates a new version
         )
         try:
             version = int(response.json()["versionNumber"])

@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 from robops.client import RobloxApiError
 
@@ -54,6 +55,39 @@ def test_retries_on_429_honouring_retry_after(make_client, tmp_path):
     assert len(session.calls) == 3
     assert sleeps[0] == 7.0
     assert len(sleeps) == 2
+
+
+def test_publish_is_not_retried_when_roblox_may_have_applied_it(make_client, tmp_path):
+    place = tmp_path / "g.rbxl"
+    place.write_bytes(b"x")
+    client, session, _ = make_client([FakeResponse(502, "bad gateway"), FakeResponse(200, {"versionNumber": 5})])
+    with pytest.raises(RobloxApiError) as err:
+        client.publish_place(1, 2, place)
+    assert err.value.status == 502 and len(session.calls) == 1
+
+    def read_timeout(method, url, kw):
+        raise requests.ReadTimeout("read timed out")
+    client, session, _ = make_client(router=read_timeout)
+    with pytest.raises(RobloxApiError, match="version history") as err:
+        client.publish_place(1, 2, place)
+    assert len(session.calls) == 1
+
+    attempts = []
+
+    def connect_timeout_then_ok(method, url, kw):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise requests.ConnectTimeout("never connected")
+        return FakeResponse(200, {"versionNumber": 6})
+    client, session, _ = make_client(router=connect_timeout_then_ok)
+    assert client.publish_place(1, 2, place).version_number == 6
+
+
+def test_retry_after_is_capped(make_client):
+    client, _, sleeps = make_client([FakeResponse(429, "slow", headers={"Retry-After": "3600"}),
+                                     FakeResponse(200, {})])
+    client.restart_servers(9)
+    assert sleeps == [60.0]
 
 
 def test_403_raises_with_scope_and_hint(make_client, tmp_path):

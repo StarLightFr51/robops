@@ -10,6 +10,13 @@ Replacing the running executable relies on the fact that Windows allows
 robops.exe.old, the new one takes its place, and the old one is deleted on
 the next launch.
 
+Automatic check: at most once a day, robops *tells* the user that a new version
+exists; `robops self-update` installs it. Silent installation (the downloaded
+executable replaces the current one without asking) is opt-in with
+ROBOPS_AUTO_UPDATE=1: the SHA-256 checksums come from the same release, so they
+detect a corrupted download but not a compromised GitHub account. Releases also
+carry a build provenance attestation: `gh attestation verify robops.exe --repo <owner>/robops`.
+
 Private repository: set ROBOPS_GITHUB_TOKEN (a token with read access to the repository).
 """
 
@@ -22,9 +29,9 @@ import shutil
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import requests
 
@@ -274,6 +281,11 @@ def auto_update_disabled_reason() -> str | None:
     return None
 
 
+def auto_install_enabled() -> bool:
+    """Silent installation of new versions (opt-in): ROBOPS_AUTO_UPDATE=1."""
+    return os.environ.get("ROBOPS_AUTO_UPDATE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def cleanup_after_update() -> None:
     if is_frozen():
         cleanup_old(current_executable())
@@ -285,10 +297,11 @@ def maybe_auto_update(
     session: requests.Session | None = None,
     notify: Callable[[str], None] | None = None,
 ) -> str | None:
-    """Checks (at most once a day) and installs a new version.
+    """Checks (at most once a day) whether a new version exists.
 
-    Never raises: a failed update must not break the command the user just
-    ran. Returns the installed version.
+    By default only tells the user (`robops self-update` installs it); installs
+    it silently with ROBOPS_AUTO_UPDATE=1. Never raises: a failed check must not
+    break the command the user just ran. Returns the installed version, if any.
     """
     notify = notify or (lambda msg: print(msg, file=sys.stderr, flush=True))
     if auto_update_disabled_reason():
@@ -299,14 +312,20 @@ def maybe_auto_update(
     if isinstance(last, (int, float)) and 0 <= now - last < CHECK_INTERVAL:
         return None
     _save_state({**state, "last_check": now})
+    install = auto_install_enabled()
     try:
         session = session or make_session(github_token())
         release = latest_release(repository(), session=session, timeout=5)
         if not is_newer(release.version, __version__):
             return None
+        if not install:
+            notify(f"ℹ robops {release.version} is available (installed: {__version__}). "
+                   "Install it with:  robops self-update")
+            return None
         update_executable(release, current_executable(), session=session)
     except (UpdateError, OSError, requests.RequestException) as exc:
-        notify(f"⚠ Automatic robops update failed: {exc}")
+        notify(f"⚠ Automatic robops update failed: {exc}" if install
+               else f"⚠ Could not check for robops updates: {exc}")
         return None
     _save_state({**state, "last_check": now, "installed": release.version})
     notify(f"✔ robops updated: {__version__} → {release.version} (active on next launch).")
