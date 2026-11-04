@@ -3,7 +3,7 @@
    coming from Roblox or GitHub is inserted with textContent, never as HTML. */
 
 const TOKEN_KEY = "robops-token";
-const VIEWS = ["overview", "deployments", "players", "data", "setup"];
+const VIEWS = ["overview", "charts", "deployments", "players", "data", "setup"];
 const state = {
   token: null, summary: null, env: null, view: "overview",
   live: {}, deployments: null, backups: null, player: null,
@@ -229,7 +229,7 @@ function render() {
   renderBand();
   const view = $("view");
   put(view);
-  ({ overview: viewOverview, deployments: viewDeployments, players: viewPlayers, data: viewData, setup: viewSetup })[state.view](view);
+  ({ overview: viewOverview, charts: viewCharts, deployments: viewDeployments, players: viewPlayers, data: viewData, setup: viewSetup })[state.view](view);
 }
 
 function panel(title, note, ...content) {
@@ -750,6 +750,182 @@ function viewData(view) {
     drawStores();
     if (state.ds.store) pickStore(state.ds.store);
   }).catch((err) => put(stores, h("li", { class: "error-text", text: err.message })));
+}
+
+/* ---------------------------------------------------------------- charts */
+
+const dayFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const dayLabel = (iso) => dayFmt.format(new Date(`${iso}T12:00:00Z`));
+const bytes = (v) => size(Math.round(v));
+const whole = (v) => fmt(Math.round(v));          // averages over long periods stay readable
+
+/* A chart card: title, one-line note, the chart, its legend and its table view. */
+function chartCard(title, note, draw, extra = []) {
+  const plot = h("div", { class: "chart" });
+  const card = panel(title, note, h("div", { class: "chart-body" }, plot, ...extra));
+  card.classList.add("chart-card");
+  card._mount = () => RobopsCharts.mount(plot, () => draw(plot));
+  return card;
+}
+const emptyCard = (title, text) => panel(title, null, h("p", { class: "chart-empty panel-body", text }));
+
+function mountCharts(root) {
+  requestAnimationFrame(() => root.querySelectorAll("section.panel").forEach((card) => card._mount?.()));
+}
+
+function viewCharts(view) {
+  const env = currentEnv();
+  if (!env?.universe_id) { view.append(notice("This environment has a configuration problem: see Setup.", true)); return; }
+  const live = h("section", { class: "chart-section", "aria-label": "Live game over time" });
+  const base = h("section", { class: "chart-section", "aria-label": "Player base" });
+  const deploys = h("section", { class: "chart-section", "aria-label": "Deployments" });
+  const backups = h("section", { class: "chart-section", "aria-label": "Backups" });
+  view.append(live, base, deploys, backups);
+  drawLiveCharts(live);
+  drawPlayerBase(base);
+  drawDeployCharts(deploys);
+  drawBackupCharts(backups);
+}
+
+const RANGES = [["6h", "6 hours"], ["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"], ["all", "All"]];
+const RANGE_MS = { "6h": 6 * 3600e3, "24h": 864e5, "7d": 7 * 864e5, "30d": 30 * 864e5 };
+
+function drawLiveCharts(section) {
+  state.chartRange = state.chartRange || "24h";
+  const buttons = h("div", { class: "segmented", role: "group", "aria-label": "Period" }, RANGES.map(([key, label]) =>
+    h("button", { type: "button", "aria-pressed": String(key === state.chartRange), onclick: () => { state.chartRange = key; put(section); drawLiveCharts(section); } }, label)));
+  const note = h("p", { text: "Loading the recorded stats…" });
+  const cards = h("div", { class: "chart-cards" });
+  put(section, h("div", { class: "section-head" }, h("h2", { text: "Live game over time" }), buttons, note), cards);
+  api(`${envPath("history")}?range=${state.chartRange}`).then((hist) => {
+    const s = hist.samples;
+    const every = Math.round(hist.every / 60);
+    note.textContent = !hist.every
+      ? "Recording is off (robops dashboard --sample-every 0): the charts only show what robops stats record saved."
+      : hist.first
+      ? `Public roblox.com stats recorded every ${every} min while the dashboard runs, since ${when(new Date(hist.first * 1000).toISOString())}. To keep recording when it's closed, schedule robops stats record.`
+      : `Nothing recorded yet: the dashboard records the public stats every ${every} min while it runs. Come back in a few minutes, or schedule robops stats record.`;
+    if (s.length < 2) {
+      put(cards, emptyCard("Players online", `${s.length} sample in this period: a chart needs at least two.`));
+      return;
+    }
+    const now = Date.now();
+    const from = RANGE_MS[hist.range] ? now - RANGE_MS[hist.range] : s[0].t * 1000;
+    const steps = s.slice(1).map((x, i) => x.t - s[i].t).sort((a, b) => a - b);
+    const gap = Math.max(hist.every * 3, (steps[Math.floor(steps.length / 2)] || hist.every) * 3) * 1000;
+    const series = (key, map = (v) => v) => s.filter((x) => typeof x[key] === "number").map((x) => ({ t: x.t * 1000, v: map(x[key], x) }));
+    const line = (title, note, points, opts = {}) => {
+      if (points.length < 2) return emptyCard(title, "Not enough values recorded in this period.");
+      const fmtv = opts.format || ((v) => RobopsCharts.number(v));
+      return chartCard(title, note, (el) => RobopsCharts.line(el, { label: title, points, from, to: now, gap, ...opts }),
+        [RobopsCharts.table(["Time", title], points.map((p) => [new Date(p.t).toLocaleString(), fmtv(p.v)]))]);
+    };
+    const likes = s.filter((x) => typeof x.up_votes === "number" && x.up_votes + x.down_votes > 0)
+      .map((x) => ({ t: x.t * 1000, v: (100 * x.up_votes) / (x.up_votes + x.down_votes) }));
+    // Visits gained per hour (short periods) or per day: difference between consecutive samples.
+    const hourly = (hist.range === "6h" || hist.range === "24h");
+    const bucketFmt = hourly ? new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }) : dayFmt;
+    const buckets = new Map();
+    for (let i = 1; i < s.length; i++) {
+      if (typeof s[i].visits !== "number" || typeof s[i - 1].visits !== "number") continue;
+      const d = new Date(s[i].t * 1000);
+      if (hourly) d.setMinutes(0, 0, 0); else d.setHours(0, 0, 0, 0);
+      buckets.set(d.getTime(), (buckets.get(d.getTime()) || 0) + Math.max(0, s[i].visits - s[i - 1].visits));
+    }
+    const visitBars = [...buckets].sort((a, b) => a[0] - b[0]).map(([t, v]) => ({ label: bucketFmt.format(t), value: v, tip: new Date(t).toLocaleString(undefined, hourly ? { dateStyle: "medium", timeStyle: "short" } : { dateStyle: "medium" }) }));
+    const visitsTitle = hourly ? "New visits per hour" : "New visits per day";
+    put(cards,
+      line("Players online", "Players in the experience at each sample (start place only for multi-place games).", series("playing"), { format: whole }),
+      line("Public servers", "Running public servers of the start place (up to 100 are counted).", series("servers"), { format: whole }),
+      visitBars.length ? chartCard(visitsTitle, "Visits added between two samples. Roblox updates the total with a delay.",
+        (el) => RobopsCharts.columns(el, { label: visitsTitle, bars: visitBars }),
+        [RobopsCharts.table([hourly ? "Hour" : "Day", "New visits"], visitBars.map((b) => [b.tip, fmt(b.value)]))]) : emptyCard(visitsTitle, "Not enough values recorded in this period."),
+      line("Favorites", "Total favorites of the experience.", series("favorites"), { zero: false }),
+      line("Likes", "Share of likes among all votes.", likes, { zero: false, min: 0, max: 100, format: (v) => `${v.toFixed(1)}%` }),
+    );
+    mountCharts(cards);
+  }).catch((err) => put(cards, notice(err.message, true)));
+}
+
+function drawPlayerBase(section) {
+  const head = h("div", { class: "section-head" }, h("h2", { text: "Player base" }));
+  const body = h("div", { class: "chart-section" }, h("p", { class: "loading", text: "Reading the backup…" }));
+  put(section, head, body);
+  const query = state.chartBackup ? `?backup=${encodeURIComponent(state.chartBackup)}` : "";
+  api(`${envPath("playerbase")}${query}`).then((r) => {
+    if (!r.analysis) {
+      head.append(h("p", { text: "These charts are computed from a player backup. Put one in the backups folder of your project: download a nightly backup from GitHub (Players and backups view), unzip it (and decrypt it if it is .age), or run robops player backup --out backups/players.json.gz." }));
+      put(body);
+      return;
+    }
+    const a = r.analysis;
+    const select = h("select", { "aria-label": "Backup used for these charts", onchange: (e) => { state.chartBackup = e.target.value; drawPlayerBase(section); } },
+      r.candidates.map((c) => h("option", { value: c.id, selected: c.id === r.chosen,
+        text: `${c.name}${c.universe_id && !c.matches ? ` (universe ${c.universe_id}, not ${state.env})` : ""}` })));
+    head.append(select, h("p", { text: `${fmt(a.profiles)} profiles in ${a.backup.name}, taken ${when(a.backup.reference)}. Activity is counted from each profile's last save.` }));
+    if (!a.profiles) { put(body, notice("This backup holds no ProfileStore profile.", true)); return; }
+    const tiles = h("dl", { class: "stats" },
+      ...[["Profiles", a.profiles], ["Active in the last 24 hours", a.active.day], ["Active in the last 7 days", a.active.week],
+        ["Active in the last 30 days", a.active.month], ["New in the last 7 days", a.new_week]]
+        .map(([label, v]) => h("div", {}, h("dt", { text: label }), h("dd", { text: fmt(v) }))));
+    const perDay = (title, note, rows, header) => chartCard(title, note,
+      (el) => RobopsCharts.columns(el, { label: title, bars: rows.map((d) => ({ label: dayLabel(d.day), value: d.count, tip: dayLabel(d.day) })) }),
+      [RobopsCharts.table(["Day", header], rows.map((d) => [d.day, fmt(d.count)]))]);
+    const histo = (title, note, hist, header) => chartCard(title, note,
+      (el) => RobopsCharts.columns(el, { label: title, bars: hist.bins.map((b) => ({ label: b.label, value: b.count, tip: `${b.label}: players` })) }),
+      [RobopsCharts.table([header, "Players"], hist.bins.map((b) => [b.label, fmt(b.count)]))]);
+    const summary = (x) => `Median ${RobopsCharts.number(x.summary.median)}, 90% at or under ${RobopsCharts.number(x.summary.p90)}, max ${RobopsCharts.number(x.summary.max)} (${fmt(x.present ?? x.summary.count)} players).`;
+    const cards = h("div", { class: "chart-cards" },
+      perDay("New players per day", "Profiles created each day (first join), last 60 days.", a.created_per_day, "New players"),
+      perDay("Players by last visit", "Each player counts once, on the day of their last save: a drop on recent days means fewer returning players.", a.active_per_day, "Players"),
+      a.sessions ? histo("Sessions per player", summary(a.sessions), a.sessions, "Sessions") : null);
+    const fields = a.fields.length
+      ? h("div", { class: "chart-cards" }, a.fields.map((f) => histo(`Data: ${f.name}`, summary(f), f, f.name)))
+      : h("p", { class: "muted", text: "No numeric field in the players' Data." });
+    put(body, tiles, cards, h("h3", { text: "Every numeric field of the players' Data" }), fields);
+    mountCharts(body);
+  }).catch((err) => put(body, notice(err.message, true)));
+}
+
+function drawDeployCharts(section) {
+  const head = h("div", { class: "section-head" }, h("h2", { text: "Deployments" }));
+  const cards = h("div", { class: "chart-cards" }, h("p", { class: "loading", text: "Loading the runs from GitHub…" }));
+  put(section, head, cards);
+  api("/api/stats/deployments").then((d) => {
+    head.append(h("p", { text: `Last ${d.runs.length} runs of ${d.workflow.name} (${d.workflow.file}).` }));
+    if (!d.runs.length) { put(cards, emptyCard("Runs per week", "No run yet.")); return; }
+    const series = [{ key: "success", label: "Succeeded", cls: "chart-ok" }, { key: "failure", label: "Failed", cls: "chart-bad" },
+      { key: "other", label: "Cancelled or running", cls: "chart-other" }];
+    const weeks = d.weeks.map((w) => ({ label: w.week.slice(5), tip: `Week ${w.week}`, parts: { success: w.success, failure: w.failure, other: w.other + w.running } }));
+    const done = d.runs.filter((x) => typeof x.minutes === "number");
+    const resultText = { success: "succeeded", failure: "failed", other: "cancelled", running: "running" };
+    put(cards,
+      chartCard("Runs per week", "Every run of the deploy workflow (checks and publishes), by result.",
+        (el) => RobopsCharts.columns(el, { label: "Runs per week", bars: weeks, series }),
+        [RobopsCharts.legend(series), RobopsCharts.table(["Week", "Succeeded", "Failed", "Other"], d.weeks.map((w) => [w.week, w.success, w.failure, w.other + w.running]))]),
+      done.length ? chartCard("Duration of each run", "Minutes from start to end, oldest on the left.",
+        (el) => RobopsCharts.columns(el, { label: "Duration of each run", format: (v) => `${v.toFixed(1)} min`,
+          bars: done.map((x) => ({ label: `#${x.number}`, value: x.minutes, tip: `Run #${x.number}, ${resultText[x.result]}, ${when(x.created_at)}` })) }),
+        [RobopsCharts.table(["Run", "Minutes"], done.map((x) => [`#${x.number} (${resultText[x.result]})`, x.minutes]))]) : emptyCard("Duration of each run", "No finished run yet."),
+    );
+    mountCharts(cards);
+  }).catch((err) => put(cards, panel("Deployments", null, h("div", { class: "panel-body" }, notice(err.message, true)))));
+}
+
+function drawBackupCharts(section) {
+  const cards = h("div", { class: "chart-cards" }, h("p", { class: "loading", text: "Loading the backups…" }));
+  put(section, h("div", { class: "section-head" }, h("h2", { text: "Backups" })), cards);
+  loadBackups(true).then((b) => {
+    const files = (b.github.ok || []).filter((x) => !x.expired && x.size).map((x) => ({ t: x.created_at, size: x.size, name: x.name }))
+      .concat(b.local.map((x) => ({ t: x.modified, size: x.size, name: x.id })))
+      .sort((x, y) => new Date(x.t) - new Date(y.t));
+    if (files.length < 2) { put(cards, emptyCard("Size of each backup", "At least two backups are needed to see a trend.")); return; }
+    put(cards, chartCard("Size of each backup", "Growing size = more players or bigger profiles. GitHub nightly backups and the files of the backups folder.",
+      (el) => RobopsCharts.columns(el, { label: "Size of each backup", format: bytes,
+        bars: files.map((f) => ({ label: dayFmt.format(new Date(f.t)), value: f.size, tip: `${f.name}, ${when(f.t)}` })) }),
+      [RobopsCharts.table(["Backup", "Size"], files.map((f) => [f.name, size(f.size)]))]));
+    mountCharts(cards);
+  }).catch((err) => put(cards, notice(err.message, true)));
 }
 
 /* ----------------------------------------------------------------- setup */

@@ -606,9 +606,32 @@ def cmd_dashboard(args) -> int:
         out.info("No ROBOPS_GITHUB_TOKEN: deployments and backups are only visible for a public repository, "
                  "and the Deploy / Backup buttons need a token with Actions: Read and write.")
     app = dash.Dashboard(config_path, github_repo=repo, github_token=token,
-                         deploy_workflow=args.deploy_workflow, backup_workflow=args.backup_workflow)
+                         deploy_workflow=args.deploy_workflow, backup_workflow=args.backup_workflow,
+                         sample_every=max(0.0, args.sample_every) * 60)
     dash.serve(app, port=args.port, open_browser=not args.no_browser)
     return EXIT_OK
+
+
+def cmd_stats_record(args) -> int:
+    from .roblox_web import RobloxWeb, WebApiError
+    from .stats import History, take_sample
+
+    cfg = load_config(args.config)
+    history = History(cfg.root)
+    web = RobloxWeb()
+    failures = 0
+    for name in [args.env] if args.env else cfg.names:
+        env = cfg.env(name)
+        try:
+            sample = take_sample(web, env.universe_id)
+        except WebApiError as exc:
+            out.error(f"{name}: {exc}")
+            failures += 1
+            continue
+        history.append(name, sample)
+        out.success(f"{name}: {sample['playing']} playing, {sample['visits']} visits recorded "
+                    f"in {history.path(name).relative_to(cfg.root)}")
+    return EXIT_FAILURE if failures else EXIT_OK
 
 
 def _point_to_action_repo(workflow: str, action_repo: str) -> str:
@@ -871,7 +894,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="deploy workflow of the game repository (default: detected, e.g. roblox-deploy.yml)")
     p.add_argument("--backup-workflow", metavar="FILE.yml",
                    help="backup workflow of the game repository (default: detected, e.g. roblox-backup.yml)")
+    p.add_argument("--sample-every", type=float, default=5, metavar="MINUTES",
+                   help="record the live stats for the Charts view every N minutes (default 5, 0 = off)")
     p.set_defaults(func=cmd_dashboard)
+
+    stats = sub.add_parser("stats", parents=[common], help="live stats history (Charts view of the dashboard)")\
+        .add_subparsers(dest="stats_cmd", required=True, metavar="<action>")
+    p = stats.add_parser("record", parents=[common],
+                         help="record one sample of the live stats (schedule it to keep a history)")
+    p.add_argument("--env", help="only this environment (default: all)")
+    p.set_defaults(func=cmd_stats_record)
 
     p = sub.add_parser("self-update", parents=[common], help="update robops.exe from the GitHub releases")
     p.add_argument("--check", action="store_true", help="only report whether an update exists")

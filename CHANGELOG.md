@@ -3,6 +3,21 @@
 All notable changes to robops. Versions follow [semantic versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH`.
 
+## 1.5.0
+
+### Added
+- Dashboard **Charts** view, with a chart for every data that has a trend or a distribution:
+  - live game over time (players online, public servers, new visits per hour/day, favorites, likes), period from
+    6 hours to 30 days;
+  - player base from a backup: activity tiles (active in 24 h / 7 days / 30 days, new in 7 days), new players per
+    day, players by last visit, sessions per player, and one histogram per numeric field of the players' Data;
+  - deployment runs per week by result, and the duration of each run;
+  - size of each backup over time.
+  Each chart has a crosshair or per-column tooltip (mouse and arrow keys) and a table view. The colours were
+  validated for colour blindness and contrast in light and dark mode.
+- The dashboard records the public live stats every 5 minutes (`--sample-every`, `.robops/stats/`), and
+  `robops stats record` records one sample (to schedule while the dashboard is closed).
+
 ## 1.4.1
 
 ### Fixed

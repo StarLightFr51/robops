@@ -269,6 +269,7 @@ Run it from your game's folder (where `robops.toml` is): it opens a page in your
 | View | What you see | What you can do |
 |---|---|---|
 | **Live game** | players online, visits, favorites, likes, each public server as a brick filled with its players, places and their last update, experience settings, last deployment | restart the servers, launch a deployment |
+| **Charts** | players online, public servers, new visits, favorites and likes over time (6 h to 30 days); new players per day, players by last visit, sessions per player and the distribution of **every numeric field of the players' Data** (coins, level, inventory size…) from a backup; deployment runs per week and their duration; size of each backup | pick the period and the backup |
 | **Deployments** | the latest runs of the *Roblox Deploy* workflow: target, status, branch and commit, author, duration (refreshed every 10 s while one is running) | launch a deployment (branch, version type, servers, DataStores) |
 | **Players and backups** | search by UserId or username: avatar, online/offline, profile data; local backups and the nightly GitHub backups | edit a player's data (changed fields shown first), restore them from a backup, delete their profile, run a backup now |
 | **DataStores** | every DataStore of the experience, its keys (prefix, scope), each value with its revision and metadata | create, edit or delete a key, take a snapshot |
@@ -279,6 +280,16 @@ Every button opens a confirmation in the environment's colour (production in ora
 **GitHub.** Deployments and GitHub backups come from the repository of the `origin` git remote (or `--github-repo owner/name`). For a private repository, set `ROBOPS_GITHUB_TOKEN` to a fine-grained token on that repository with **Actions: Read** (and **Read and write** for the *Deploy* and *Back up now* buttons). Without a token, these two parts only work for a public repository; the rest of the dashboard does not need GitHub.
 
 **Security.** The server only answers on `127.0.0.1`, refuses any other `Host` (DNS rebinding) or foreign `Origin`, and every request must carry the random session key contained in the link printed at startup: another website open in your browser can neither read the data nor press a button. The page loads nothing from the internet except avatars (`rbxcdn.com`). Don't share the link while the dashboard runs.
+
+**Charts.** Roblox only gives *current* numbers, so the dashboard records the public stats (players, visits, favorites, votes, servers) every 5 minutes while it runs, in `.robops/stats/<environment>.jsonl` (`--sample-every 15` changes the pace, `0` turns it off; no API key needed). The line breaks where nothing was recorded rather than guessing. To keep a history while the dashboard is closed, schedule `robops stats record`, for example every 15 minutes with the Windows Task Scheduler:
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "$env:LOCALAPPDATA\Programs\robops\robops.exe" -Argument "stats record" -WorkingDirectory "C:\path\to\your\game"
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
+Register-ScheduledTask -TaskName "robops stats" -Action $action -Trigger $trigger
+```
+
+The player-base charts are computed from a player backup in the `backups/` folder (the latest one of the environment's universe is picked; a nightly GitHub backup must be unzipped, and decrypted if it is `.age`). Every chart has a *Show as a table* view, and its values can be read with the mouse or with the arrow keys.
 
 Options: `--port 9000`, `--no-browser`, `--github-repo owner/name`, `--deploy-workflow deploy.yml` / `--backup-workflow backup.yml` (by default the workflows created by `robops init` are found even if renamed). If deployments don't show up, the **Setup** view checks the GitHub connection step by step (token, access to the repository, Actions permission, workflows) and says what to fix. Live player counts come from roblox.com's public API; for a multi-place experience, Roblox only counts the players of the start place there.
 
