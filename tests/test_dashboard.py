@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 
 import pytest
 import requests
@@ -357,3 +358,50 @@ def test_github_status_endpoint(server):
     steps = server.get("/api/github").json()["steps"]
     assert [s["message"] for s in steps][-2:] == ["Deploy workflow: roblox-deploy.yml (Roblox Deploy).",
                                                   "Backup workflow: roblox-backup.yml (Player Backup)."]
+
+
+# ------------------------------------------------------------------ charts
+
+def test_history_endpoint_and_sampler(server, monkeypatch):
+    app_root = server.root
+    from robops.stats import History
+    history = History(app_root)
+    now = time.time()
+    history.append("production", {"t": now - 40 * 86400, "playing": 1})      # samples are appended in time order
+    for i in range(5):
+        history.append("production", {"t": now - 3600 * (4 - i), "playing": 10 + i})
+    day = server.get("/api/env/production/history", params={"range": "24h"}).json()
+    assert [s["playing"] for s in day["samples"]] == [10, 11, 12, 13, 14] and day["first"] < now - 30 * 86400
+    assert len(server.get("/api/env/production/history", params={"range": "all"}).json()["samples"]) == 6
+    assert server.get("/api/env/production/history", params={"range": "nonsense"}).json()["range"] == "24h"
+    assert server.get("/api/env/nope/history").status_code == 400
+
+
+def test_sampler_records_every_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("ROBLOX_API_KEY", "k")
+    app = make_dashboard(tmp_path)
+    app.sample_every = 0.05
+    thread = app.start_sampler()
+    time.sleep(0.3)
+    app.stop()
+    thread.join(2)
+    assert len(app.history.read("production")) >= 2 and app.history.read("staging")
+    assert dashboard.Dashboard.__dataclass_fields__["sample_every"].default == 300     # 5 minutes
+    app.sample_every = 0
+    assert app.start_sampler() is None
+
+
+def test_playerbase_endpoint_picks_the_backup_of_the_environment(server):
+    data = server.get("/api/env/production/playerbase").json()
+    assert data["chosen"] == "backups/players-2026-11-03.json.gz"
+    assert data["candidates"][0]["matches"] is True                 # universe 333 = production
+    assert data["analysis"]["profiles"] == 2
+    staging = server.get("/api/env/staging/playerbase").json()
+    assert staging["candidates"][0]["matches"] is False             # still usable, flagged as other universe
+    assert server.get("/api/env/production/playerbase", params={"backup": "../../x"}).status_code == 404
+
+
+def test_deployment_stats_endpoint(server):
+    data = server.get("/api/stats/deployments").json()
+    assert data["workflow"]["file"] == "roblox-deploy.yml"
+    assert sum(w["success"] + w["failure"] + w["other"] + w["running"] for w in data["weeks"]) == 4

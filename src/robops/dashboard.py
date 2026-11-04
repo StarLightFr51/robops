@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import threading
+import time
 import webbrowser
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -43,10 +44,11 @@ from .config import ConfigError, Environment, load_config
 from .deploy import overwrite_entry
 from .github import GitHub, GitHubError, pick_workflow, workflow_file
 from .roblox_web import RobloxWeb, WebApiError
+from .stats import RANGES, History, analyze_backup, backup_header, deployment_stats, downsample, take_sample
 
 DEFAULT_PORT = 8765
 BACKUP_SUFFIXES = (".json", ".json.gz")
-_STATIC = {"/": "index.html", "/app.js": "app.js", "/app.css": "app.css"}
+_STATIC = {"/": "index.html", "/app.js": "app.js", "/charts.js": "charts.js", "/app.css": "app.css"}
 _FONT_RE = re.compile(r"/fonts/([\w.-]+\.woff2)")
 _TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
           ".css": "text/css; charset=utf-8", ".woff2": "font/woff2"}
@@ -84,13 +86,23 @@ class Dashboard:
     github_factory: Callable[[str, str | None], GitHub] = GitHub.create
     deploy_workflow: str | None = None        # forced file name (--deploy-workflow), otherwise detected
     backup_workflow: str | None = None
+    sample_every: float = 300                 # seconds between two live samples (0 = no recording)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _history: History | None = None
+    _analysis_cache: dict = field(default_factory=dict)
+    _stop: threading.Event = field(default_factory=threading.Event)
 
     # ---------------------------------------------------------------- helpers
 
     @property
     def root(self) -> Path:
         return self.config_path.resolve().parent
+
+    @property
+    def history(self) -> History:
+        if self._history is None:
+            self._history = History(self.root)
+        return self._history
 
     @property
     def safety_dir(self) -> Path:
@@ -377,6 +389,79 @@ class Dashboard:
         scope, key = pl.split_scoped(key, scope or None)
         return self.client(env).get_entry(env.universe_id, store, key, scope=scope)
 
+    # ---------------------------------------------------------------- charts
+
+    def record_samples(self) -> dict[str, str]:
+        """One live sample per environment (public roblox.com stats, no API key needed)."""
+        cfg = self._config()
+        results = {}
+        for name in cfg.names:
+            try:
+                env = cfg.env(name)
+                self.history.append(name, take_sample(self.web, env.universe_id))
+                results[name] = "ok"
+            except (ConfigError, WebApiError, OSError) as exc:
+                results[name] = str(exc)
+        return results
+
+    def start_sampler(self) -> threading.Thread | None:
+        """Records the live stats every sample_every seconds while the dashboard runs."""
+        if self.sample_every <= 0:
+            return None
+
+        def loop() -> None:
+            names = self._config().names
+            last = max((self.history.last_time(n) or 0 for n in names), default=0)
+            wait = max(0.0, last + self.sample_every - time.time())
+            while not self._stop.wait(wait):
+                self.record_samples()
+                wait = self.sample_every
+
+        thread = threading.Thread(target=loop, name="robops-sampler", daemon=True)
+        thread.start()
+        return thread
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def history_view(self, name: str, range_key: str | None) -> dict:
+        self.env(name)                              # unknown environment → clear error
+        key = range_key if range_key in RANGES else "24h"
+        span = RANGES[key]
+        samples = self.history.read(name, since=time.time() - span if span else None)
+        first = self.history.read(name)[:1]
+        return {"range": key, "samples": downsample(samples), "recorded": len(samples),
+                "first": first[0]["t"] if first else None, "every": self.sample_every,
+                "file": str(_rel(self.history.path(name), self.root)).replace("\\", "/")}
+
+    def playerbase(self, name: str, backup_id: str | None) -> dict:
+        env = self.env(name)
+        candidates = []
+        for path in sorted(self._backup_files(), key=lambda p: p.stat().st_mtime, reverse=True):
+            header = backup_header(path)
+            candidates.append({"id": str(_rel(path, self.root)).replace("\\", "/"), "name": path.name,
+                               "universe_id": header.get("universe_id"), "created_at": header.get("created_at"),
+                               "matches": header.get("universe_id") == env.universe_id})
+        if not candidates:
+            return {"candidates": [], "analysis": None}
+        chosen = (next((c for c in candidates if c["id"] == backup_id), None) if backup_id
+                  else next((c for c in candidates if c["matches"]), candidates[0]))
+        if chosen is None:
+            raise DashboardError(404, f"Backup not found: {backup_id}")
+        path = self._backup_path(str(chosen["id"]))
+        stat = path.stat()
+        key = (str(path), stat.st_mtime, stat.st_size, env.players.datastore, env.players.key_prefix)
+        if key not in self._analysis_cache:
+            self._analysis_cache.clear()           # keep only the latest analysis in memory
+            self._analysis_cache[key] = analyze_backup(path, env.players)
+        return {"candidates": candidates, "chosen": chosen["id"], "analysis": self._analysis_cache[key]}
+
+    def deployment_stats(self) -> dict:
+        gh = self.github()
+        workflow = self._workflow(gh, "deploy")
+        return {"workflow": {"file": workflow_file(workflow), "name": workflow.get("name")},
+                **deployment_stats(gh.runs(workflow_file(workflow), per_page=100))}
+
     # --------------------------------------------------------------- actions
 
     def restart(self, name: str, body: dict) -> dict:
@@ -552,6 +637,9 @@ def _routes(app: Dashboard) -> list[tuple[str, re.Pattern, Callable[..., Any]]]:
         ("GET", re.compile(r"/api/deployments"), lambda p, b: app.deployments()),
         ("GET", re.compile(r"/api/backups"), lambda p, b: app.backups()),
         ("GET", re.compile(r"/api/github"), lambda p, b: app.github_status()),
+        ("GET", re.compile(rf"/api/env/{env}/history"), lambda p, b, env: app.history_view(env, q(p, "range"))),
+        ("GET", re.compile(rf"/api/env/{env}/playerbase"), lambda p, b, env: app.playerbase(env, q(p, "backup"))),
+        ("GET", re.compile(r"/api/stats/deployments"), lambda p, b: app.deployment_stats()),
         ("GET", re.compile(rf"/api/env/{env}/player"), lambda p, b, env: app.player(env, q(p, "q") or "")),
         ("GET", re.compile(rf"/api/env/{env}/datastores"), lambda p, b, env: app.datastores(env, q(p, "prefix"))),
         ("GET", re.compile(rf"/api/env/{env}/entries"),
@@ -694,6 +782,9 @@ def serve(app: Dashboard, *, port: int = DEFAULT_PORT, open_browser: bool = True
     url = f"http://127.0.0.1:{port_ref[0]}/#token={token}"
     out.success(f"robops dashboard running: {url}")
     out.info("  Keep this terminal open; Ctrl+C to stop. The link contains a session key: don't share it.")
+    if app.sample_every > 0:
+        out.info(f"  Live stats recorded every {app.sample_every / 60:g} min in .robops/stats/ (Charts view).")
+        app.start_sampler()
     if ready:
         ready(url, server)
     if open_browser:
@@ -703,5 +794,6 @@ def serve(app: Dashboard, *, port: int = DEFAULT_PORT, open_browser: bool = True
     except KeyboardInterrupt:
         pass
     finally:
+        app.stop()
         server.server_close()
         out.info("Dashboard stopped.")
