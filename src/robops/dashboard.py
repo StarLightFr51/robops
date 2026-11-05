@@ -48,7 +48,7 @@ from .stats import RANGES, History, analyze_backup, backup_header, deployment_st
 
 DEFAULT_PORT = 8765
 BACKUP_SUFFIXES = (".json", ".json.gz")
-_STATIC = {"/": "index.html", "/app.js": "app.js", "/charts.js": "charts.js", "/app.css": "app.css"}
+_STATIC = {"/": "index.html", "/app.js": "app.js", "/charts.js": "charts.js", "/editor.js": "editor.js", "/app.css": "app.css"}
 _FONT_RE = re.compile(r"/fonts/([\w.-]+\.woff2)")
 _TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
           ".css": "text/css; charset=utf-8", ".woff2": "font/woff2"}

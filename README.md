@@ -271,7 +271,7 @@ Run it from your game's folder (where `robops.toml` is): it opens a page in your
 | **Live game** | players online, visits, favorites, likes, each public server as a brick filled with its players, places and their last update, experience settings, last deployment | restart the servers, launch a deployment |
 | **Charts** | players online, public servers, new visits, favorites and likes over time (6 h to 30 days); new players per day, players by last visit, sessions per player and the distribution of **every numeric field of the players' Data** (coins, level, inventory size…) from a backup; deployment runs per week and their duration; size of each backup | pick the period and the backup |
 | **Deployments** | the latest runs of the *Roblox Deploy* workflow: target, status, branch and commit, author, duration (refreshed every 10 s while one is running) | launch a deployment (branch, version type, servers, DataStores) |
-| **Players and backups** | search by UserId or username: avatar, online/offline, profile data; local backups and the nightly GitHub backups | edit a player's data (changed fields shown first), restore them from a backup, delete their profile, run a backup now |
+| **Players and backups** | search by UserId or username: avatar, online/offline, profile data; local backups and the nightly GitHub backups | edit a player's data in a code editor (changed fields shown before saving), restore them from a backup, delete their profile, run a backup now |
 | **DataStores** | every DataStore of the experience, its keys (prefix, scope), each value with its revision and metadata | create, edit or delete a key, take a snapshot |
 | **Setup** | the result of `robops check` for each environment, GitHub repository and token | — |
 
@@ -280,6 +280,21 @@ Every button opens a confirmation in the environment's colour (production in ora
 **GitHub.** Deployments and GitHub backups come from the repository of the `origin` git remote (or `--github-repo owner/name`). For a private repository, set `ROBOPS_GITHUB_TOKEN` to a fine-grained token on that repository with **Actions: Read** (and **Read and write** for the *Deploy* and *Back up now* buttons). Without a token, these two parts only work for a public repository; the rest of the dashboard does not need GitHub.
 
 **Security.** The server only answers on `127.0.0.1`, refuses any other `Host` (DNS rebinding) or foreign `Origin`, and every request must carry the random session key contained in the link printed at startup: another website open in your browser can neither read the data nor press a button. The page loads nothing from the internet except avatars (`rbxcdn.com`). Don't share the link while the dashboard runs.
+
+**Editing data.** A player's data and DataStore values are edited in a JSON code editor:
+- syntax colours, line numbers and the current line;
+- indentation kept on Enter, `{` `[` `"` closed automatically, matching brackets highlighted;
+- lines changed since loading marked in the margin, with a count in the status bar;
+- errors pointed at their line and column with a plain explanation (missing comma, comma before `}`, unclosed text, `tru` instead of `true`…). Invalid JSON is never sent.
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+S` | save (opens the usual confirmation) |
+| `Shift+Alt+F` | format |
+| `Tab` / `Shift+Tab` (or `Ctrl+]` / `Ctrl+[`) | indent / outdent the selected lines |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | undo / redo |
+
+*Revert* goes back to the value loaded from Roblox.
 
 **Charts.** Roblox only gives *current* numbers, so the dashboard records the public stats (players, visits, favorites, votes, servers) every 5 minutes while it runs, in `.robops/stats/<environment>.jsonl` (`--sample-every 15` changes the pace, `0` turns it off; no API key needed). The line breaks where nothing was recorded rather than guessing. To keep a history while the dashboard is closed, schedule `robops stats record`, for example every 15 minutes with the Windows Task Scheduler:
 

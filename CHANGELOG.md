@@ -3,6 +3,22 @@
 All notable changes to robops. Versions follow [semantic versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH`.
 
+## 1.6.0
+
+### Changed
+- Dashboard: player data and DataStore values are edited in a JSON code editor instead of a plain text box.
+  - Syntax colours, line numbers, current line, matching brackets.
+  - Automatic indentation, closing of `{` `[` `"`, Tab / Shift+Tab on selections.
+  - Lines changed since loading marked in the margin.
+  - Errors pointed at their exact line and column with a plain explanation (robops finds the position itself:
+    browsers don't always give it).
+  - Shortcuts: `Ctrl+S` saves (invalid JSON is refused and the caret goes to the error), `Shift+Alt+F` formats,
+    *Revert* restores the loaded value. Native undo/redo keeps working through the automatic edits.
+  - The *Save player* button stays disabled until something changed.
+
+### Fixed
+- Dashboard on phones: a long backup name no longer makes the page scroll sideways.
+
 ## 1.5.0
 
 ### Added
