@@ -55,6 +55,11 @@ def test_page_is_served_with_strict_headers(server):
     csp = resp.headers["Content-Security-Policy"]
     assert "script-src 'self'" in csp and "unsafe-inline" not in csp and "frame-ancestors 'none'" in csp
     assert resp.headers["Cache-Control"] == "no-store"
+    for script in ("/app.js", "/charts.js", "/editor.js"):
+        js = requests.get(server.base + script, timeout=5)
+        assert js.status_code == 200 and js.headers["Content-Type"].startswith("text/javascript")
+    page = resp.text
+    assert page.index("/charts.js") < page.index("/editor.js") < page.index("/app.js")   # app.js uses both
     font = requests.get(server.base + "/fonts/atkinson-hyperlegible-latin-400-normal.woff2", timeout=5)
     assert font.status_code == 200 and font.headers["Content-Type"] == "font/woff2"
     # Raw path (requests would normalise "..")

@@ -154,6 +154,26 @@ function openModal({ title, build, okLabel = "Confirm", danger = false, typed = 
   (typedInput || body.querySelector("input, select, textarea") || ok).focus();
 }
 
+/* The JSON code editor with its toolbar (Format, Revert) and a hint of the shortcuts. */
+function jsonEditor({ value, label, rows, onSave, onChange }) {
+  const editor = RobopsEditor.create({ value, label, rows, onSave, onChange });
+  editor.toolbar.append(
+    h("button", { type: "button", class: "btn ghost small", title: "Shift+Alt+F",
+      onclick: () => { if (!editor.format()) { editor.showError(); toast("The JSON has an error: fix it before formatting.", true); } } }, "Format"),
+    h("button", { type: "button", class: "btn ghost small", title: "Back to the value loaded from Roblox",
+      onclick: () => editor.revert() }, "Revert"),
+    h("span", { class: "hint", text: "Ctrl+S save, Tab indent, Shift+Alt+F format" }));
+  return editor;
+}
+
+/* Value to save, or undefined after pointing at the JSON error. */
+function editorValue(editor) {
+  if (editor.parsed !== undefined || !editor.error) return editor.parsed;
+  editor.showError();
+  toast(`Line ${editor.error.line}: ${editor.error.message}. Nothing was saved.`, true);
+  return undefined;
+}
+
 function changesBlock(changes) {
   if (!changes.length) return h("p", { class: "muted", text: "No difference with the current data." });
   return h("pre", { class: "changes", text: changes.slice(0, 200).join("\n") + (changes.length > 200 ? `\n… ${changes.length - 200} more` : "") });
@@ -493,19 +513,14 @@ function playerResult(p) {
       h("pre", { class: "changes", text: JSON.stringify(p.raw, null, 2) })));
   }
   const status = { offline: ["ok", "Offline"], online: ["bad", "Online"], stale: ["busy", "Stale lock"] }[p.state.status];
-  const editor = h("textarea", { rows: 22, spellcheck: "false", "aria-label": "Player data (JSON)" });
-  editor.value = JSON.stringify(p.data, null, 2);
-  const parseError = h("p", { class: "error-text", hidden: true });
-  const parse = () => {
-    try { const v = JSON.parse(editor.value); editor.classList.remove("invalid"); parseError.hidden = true; return v; }
-    catch (err) { editor.classList.add("invalid"); parseError.textContent = `Invalid JSON: ${err.message}`; parseError.hidden = false; return undefined; }
-  };
-  editor.addEventListener("input", parse);
   const force = h("input", { type: "checkbox" });
   let saveButton = null;
-  force.addEventListener("change", () => { if (saveButton) saveButton.disabled = !p.state.writable && !force.checked; });
+  const canSave = () => (p.state.writable || force.checked) && editor.dirty;
+  const syncSave = () => { if (saveButton) saveButton.disabled = !canSave(); };
+  force.addEventListener("change", syncSave);
   const save = async () => {
-    const data = parse();
+    if (!canSave()) { if (!editor.dirty) toast("No change to save."); return; }
+    const data = editorValue(editor);
     if (data === undefined) return;
     try {
       const preview = await api(envPath("player/edit"), { user_id: p.user_id, data, preview: true, force: force.checked });
@@ -517,20 +532,21 @@ function playerResult(p) {
         okLabel: "Save player", typed: env.protected ? env.name : null,
         onSubmit: async () => {
           const r = await api(envPath("player/edit"), { user_id: p.user_id, data, force: force.checked, confirm: env.name });
+          editor.reset(JSON.stringify(data, null, 2));          // saved: this is the new reference
           refreshPlayer();
           return r;
         },
       });
     } catch (err) { toast(err.message, true); }
   };
+  const editor = jsonEditor({ value: JSON.stringify(p.data, null, 2), label: `Data of player ${p.user_id}`, rows: 24,
+    onSave: save, onChange: syncSave });
   const meta = p.meta || {};
   return h("div", { class: "split" },
     panel("Data", "Edit the JSON, then save: you see the changed fields before anything is written.",
-      h("div", { class: "editor" }, editor, parseError,
+      h("div", { class: "editor" }, editor.element,
         h("div", { class: "row" },
-          h("button", { type: "button", class: "btn ghost", onclick: () => { const v = parse(); if (v !== undefined) editor.value = JSON.stringify(v, null, 2); } }, "Format"),
-          h("button", { type: "button", class: "btn ghost", onclick: () => { editor.value = JSON.stringify(p.data, null, 2); parse(); } }, "Undo changes"),
-          (saveButton = h("button", { type: "button", class: "btn env", onclick: save, disabled: !p.state.writable }, "Save player")),
+          (saveButton = h("button", { type: "button", class: "btn env", onclick: save, disabled: !canSave() }, "Save player")),
         ),
         !p.state.writable ? h("label", { class: "check" }, force, h("span", { text: "Write even though the player looks online (their server may overwrite it)" })) : null)),
     h("div", { class: "stack" },
@@ -695,22 +711,26 @@ function viewData(view) {
   };
   const drawEntry = (key, data) => {
     const name = h("input", { type: "text", value: key || "", placeholder: "Key name", "aria-label": "Key", readOnly: !!key, class: "code" });
-    const editor = h("textarea", { rows: 18, spellcheck: "false", "aria-label": "Value (JSON)" });
-    editor.value = data ? JSON.stringify(data.value, null, 2) : "{}";
-    const parseError = h("p", { class: "error-text", hidden: true });
-    const parse = () => { try { const v = JSON.parse(editor.value); editor.classList.remove("invalid"); parseError.hidden = true; return v; } catch (err) { editor.classList.add("invalid"); parseError.textContent = `Invalid JSON: ${err.message}`; parseError.hidden = false; return undefined; } };
-    editor.addEventListener("input", parse);
     const env = currentEnv();
     const save = () => {
-      const value = parse(), k = name.value.trim();
-      if (value === undefined || !k) { if (!k) toast("Give the key a name.", true); return; }
+      const k = name.value.trim();
+      if (!k) { toast("Give the key a name.", true); name.focus(); return; }
+      const value = editorValue(editor);
+      if (value === undefined) return;
       openModal({
         title: `Save ${state.ds.store}/${k} in ${env.name}?`,
         build: (body) => body.append(h("p", { text: key ? "The current value is replaced (it stays in the key's version history on Roblox). Its users and attributes are kept." : "A new key is created with this value." })),
         okLabel: "Save key", typed: env.protected ? env.name : null,
-        onSubmit: async () => { const r = await api(envPath("entry/set"), { datastore: state.ds.store, key: k, scope: state.ds.scope || null, value, confirm: env.name }); if (!key) loadKeys(false); return r; },
+        onSubmit: async () => {
+          const r = await api(envPath("entry/set"), { datastore: state.ds.store, key: k, scope: state.ds.scope || null, value, confirm: env.name });
+          editor.reset(JSON.stringify(value, null, 2));
+          if (!key) loadKeys(false);
+          return r;
+        },
       });
     };
+    const editor = jsonEditor({ value: data ? JSON.stringify(data.value, null, 2) : "{}", label: `Value of ${key || "the new key"}`,
+      rows: 18, onSave: save });
     const remove = () => openModal({
       title: `Delete ${state.ds.store}/${key}?`, danger: true, okLabel: "Delete key", typed: env.name,
       build: (body) => body.append(h("p", { text: "The key is marked as deleted; Roblox purges it within 30 days." })),
@@ -722,7 +742,7 @@ function viewData(view) {
         h("dt", { text: "Updated" }), h("dd", { text: when(data.revisionCreateTime || data.updateTime) || "—" }),
         h("dt", { text: "Users" }), h("dd", { text: (data.users || []).join(", ") || "—" }),
         h("dt", { text: "Attributes" }), h("dd", { class: "code", text: data.attributes ? JSON.stringify(data.attributes) : "—" })) : null,
-      editor, parseError,
+      editor.element,
       h("div", { class: "row" }, h("button", { type: "button", class: "btn env", onclick: save }, "Save key"),
         key ? h("button", { type: "button", class: "btn danger", onclick: remove }, "Delete key") : null));
   };
