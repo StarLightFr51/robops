@@ -171,3 +171,20 @@ def test_list_datastores_paginates(make_client):
     assert list(client.list_datastores(1)) == ["Default", "____PS", "Config"]
     assert session.calls[0]["url"].endswith("/cloud/v2/universes/1/data-stores")
     assert session.calls[1]["params"]["pageToken"] == "n"
+
+
+def test_set_entry_leaves_out_null_fields(make_client):
+    """v2 answers 400 "Value cannot be null" for an object holding a null (offline ProfileStore profile)."""
+    client, session, _ = make_client([FakeResponse(200, {"revisionId": "r"})])
+    profile = {"Data": {"coins": 5, "title": None, "bag": [1, None, {"x": None, "y": 2}]},
+               "MetaData": {"ActiveSession": None, "ForceLoadSession": None, "SessionLoadCount": 3}}
+    client.set_entry(1, "Default", "PLAYER_1", profile, scope="global")
+    sent = session.calls[0]["json"]["value"]
+    assert sent == {"Data": {"coins": 5, "bag": [1, None, {"y": 2}]}, "MetaData": {"SessionLoadCount": 3}}
+    assert profile["MetaData"]["ActiveSession"] is None            # the caller's object is untouched
+
+
+def test_null_error_gets_a_specific_hint():
+    err = RobloxApiError(400, "Value cannot be null. (Parameter 'value')", scope="universe-datastores.objects:update")
+    text = err.describe()
+    assert "can't store a null" in text and "place file" not in text
