@@ -35,7 +35,7 @@ MAX_RETRY_AFTER = 60.0     # seconds: a huge Retry-After must not block a CI job
 
 # Hints displayed along with the most common HTTP errors.
 STATUS_HINTS = {
-    400: "Invalid request: corrupted place file, malformed JSON or incorrect parameter.",
+    400: "Invalid request: Roblox refused the content or a parameter (for a publish: corrupted place file).",
     401: (
         "API key rejected. Check that it has not expired and that its IP restrictions "
         "allow the current machine (GitHub Actions runners have dynamic IPs: "
@@ -71,6 +71,10 @@ class RobloxApiError(Exception):
         if self.scope:
             parts.append(f"Required permission: {self.scope}")
         hint = STATUS_HINTS.get(self.status)
+        if "cannot be null" in self.message.lower():
+            # Open Cloud v2 can't store a null; robops leaves out null fields, so one is left inside a list.
+            hint = ("Roblox's DataStore API (v2) can't store a null. robops leaves out the null fields of objects "
+                    "(same thing as nil for Luau), so a null is left inside a list, e.g. [1, null]: remove it.")
         if hint:
             parts.append(hint)
         return "\n  ".join(parts)
@@ -91,6 +95,22 @@ def _content_type_for(path: Path) -> str:
     if suffix == ".rbxlx":
         return "application/xml"
     raise ValueError(f"Unsupported extension for a place: {path.name} (expected .rbxl or .rbxlx)")
+
+
+def without_nulls(value: Any) -> Any:
+    """Copy of a value without the null fields of its objects.
+
+    Open Cloud v2 rejects an entry whose value holds an object field set to null
+    (HTTP 400 "Value cannot be null. (Parameter 'value')"), e.g. the
+    MetaData.ActiveSession of an offline ProfileStore profile. For Luau a missing
+    key and a null are both nil, so leaving them out changes nothing in game.
+    Lists are kept as they are: removing an element would shift the others.
+    """
+    if isinstance(value, dict):
+        return {k: without_nulls(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [without_nulls(v) for v in value]
+    return value
 
 
 def _entry_segment(key: str, *, for_read: bool = False) -> str:
@@ -331,8 +351,10 @@ class OpenCloudClient:
 
         `etag` (read during a GET) protects against concurrent writes:
         if the entry changed since it was read, Roblox refuses the update.
+
+        Null fields of objects are left out (see without_nulls).
         """
-        body: dict[str, Any] = {"value": value}
+        body: dict[str, Any] = {"value": without_nulls(value)}
         if users:
             body["users"] = users
         if attributes:

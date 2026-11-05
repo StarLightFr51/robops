@@ -3,6 +3,16 @@
 All notable changes to robops. Versions follow [semantic versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH`.
 
+## 1.6.1
+
+### Fixed
+- Saving a player (dashboard, `player edit`, `player restore`) or any DataStore value holding a null failed with
+  `HTTP 400: Value cannot be null. (Parameter 'value')`. Open Cloud's v2 DataStore API refuses an object field
+  set to null, and an offline ProfileStore profile has some (`MetaData.ActiveSession`, `ForceLoadSession`).
+  Null fields of objects are now left out of what is written. For Luau a missing field and a null are both
+  `nil`, so the game sees the same thing; a field you set to `null` in the editor simply disappears.
+- The hint shown with an HTTP 400 no longer talks about a "corrupted place file" for DataStore writes.
+
 ## 1.6.0
 
 ### Changed

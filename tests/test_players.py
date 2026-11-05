@@ -209,7 +209,9 @@ def test_restore_over_stale_lock_clears_it(store):
     assert run("restore", "3", "--from", "b.json") == 0
     body = store.patches[-1][1]["value"]
     assert body["Data"] == {"coins": 333}
-    assert body["MetaData"]["ActiveSession"] is None
+    # The lock is released by leaving ActiveSession out: a null field is refused by Open Cloud v2,
+    # and for Luau a missing key is nil as well.
+    assert "ActiveSession" not in body["MetaData"] and "ForceLoadSession" not in body["MetaData"]
     assert body["MetaData"]["SessionLoadCount"] == 7
 
 
@@ -218,7 +220,7 @@ def test_restore_recreates_deleted_profile_without_lock(store):
         json.dump({"PLAYER_9": profile({"coins": 9}, online=True, age=10)}, fh)
     assert run("restore", "9", "--from", "b.json") == 0
     body = store.patches[-1][1]
-    assert body["value"]["MetaData"]["ActiveSession"] is None
+    assert "ActiveSession" not in body["value"]["MetaData"]        # lock released (null left out)
     assert "etag" not in body
 
 

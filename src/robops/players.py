@@ -154,7 +154,10 @@ def fetch_profile(client: OpenCloudClient, universe_id: int, cfg: PlayersConfig,
 # ------------------------------------------------------------- modification
 
 def unlocked(profile: dict) -> dict:
-    """Copy of the profile without the session lock (ActiveSession / ForceLoadSession)."""
+    """Copy of the profile without the session lock (ActiveSession / ForceLoadSession).
+
+    The fields are set to None here; the write leaves them out (Open Cloud v2 refuses
+    nulls, and for ProfileStore a missing field is nil as well)."""
     result = copy.deepcopy(profile)
     meta = result.setdefault("MetaData", {})
     meta["ActiveSession"] = None
