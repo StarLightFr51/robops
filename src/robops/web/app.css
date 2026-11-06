@@ -485,3 +485,16 @@ details > summary { cursor: pointer; }
   .findings-list p, .findings-list .meta { grid-column: 1; }
   th, td { padding: .55rem .75rem; }
 }
+
+/* Simulated players: Connect Claude */
+details.setup > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: .75rem;
+  padding: 1rem 1.25rem; border-bottom: 1px solid var(--line); }
+details.setup > summary::-webkit-details-marker { display: none; }
+details.setup > summary h2 { margin: 0; font-size: 1.375rem; }
+details.setup > summary::after { content: "Show"; margin-left: auto; color: var(--ink-soft); font-size: .875rem; }
+details.setup[open] > summary::after { content: "Hide"; }
+details.setup:not([open]) > summary { border-bottom: 0; }
+details.setup .findings .msg { white-space: normal; display: grid; gap: .35rem; justify-items: start; min-width: 0; }
+details.setup .findings .lvl { text-align: center; }
+.setup-more > summary { cursor: pointer; }
+.setup-more[open] { display: grid; gap: .5rem; }

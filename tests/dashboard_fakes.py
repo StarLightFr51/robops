@@ -215,4 +215,6 @@ def make_dashboard(root: Path, cloud: FakeCloud | None = None, gh: FakeGitHub | 
     return Dashboard(make_project(root), github_repo=gh.repo, github_token="t", web=FakeWeb(),  # type: ignore[arg-type]
                      client_factory=lambda key: cloud,  # type: ignore[arg-type,return-value]
                      github_factory=lambda repo, token: gh,  # type: ignore[arg-type,return-value]
-                     sample_every=0)                  # tests start the sampler themselves
+                     sample_every=0,                  # tests start the sampler themselves
+                     claude_logs=root / "claude-logs",     # never this computer's own Claude Desktop
+                     claude_config_files=[root / "claude" / "claude_desktop_config.json"])

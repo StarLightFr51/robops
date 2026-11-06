@@ -2,12 +2,16 @@
 
 Two sources, shown in the dashboard's "Simulated players" view:
 
-* Reports. After simulating players in Studio, Claude saves a report (format
-  "robops-playtest/1") with the MCP's run_code tool into a DataStore of the
-  universe (default "RobopsPlaytests", [playtests] datastore in robops.toml).
-  Reports pasted in the dashboard, or put as JSON files in playtests/, are read too.
-* Claude Desktop's MCP logs (%APPDATA%\\Claude\\logs on Windows): every tool call
-  Claude made to the Roblox Studio server (code run, play mode…) and its result.
+* Reports (format "robops-playtest/1"). Claude saves them with the robops MCP
+  server's save_playtest_report tool (robops mcp install adds it to Claude
+  Desktop) into .robops/playtests/ of the project. Without it, Claude can save
+  them with Studio's run_code into a DataStore of the universe (default
+  "RobopsPlaytests", [playtests] datastore in robops.toml). Reports pasted in the
+  dashboard, or put as JSON files in playtests/, are read too.
+* Claude Desktop's MCP logs: when Claude called the Roblox Studio server and
+  whether it worked. Recent Claude Desktop versions only log a summary of each
+  message (method="tools/call" id=4, id=4 result(1 blocks)); older ones logged
+  the whole JSON-RPC message, with the tool name, its arguments and the answer.
 """
 
 from __future__ import annotations
@@ -119,6 +123,8 @@ def normalize_report(key: str, value: Any, source: str) -> dict:
         "title": _text(value.get("title"), 200) or key,
         "started_at": _text(value.get("started_at"), 40),
         "ended_at": _text(value.get("ended_at"), 40),
+        "saved_at": _text(value.get("saved_at"), 40),
+        "saved_by": _text(value.get("saved_by"), 120),
         "place": _text(value.get("place"), 120),
         "summary": _text(value.get("summary")),
         "players": players, "findings": findings, "metrics": metrics,
@@ -128,7 +134,24 @@ def normalize_report(key: str, value: Any, source: str) -> dict:
 
 def summary(report: dict) -> dict:
     """What the list of reports shows (without players, steps…)."""
-    return {k: report[k] for k in ("key", "source", "title", "started_at", "place", "counts", "recognized")}
+    return {k: report[k] for k in ("key", "source", "title", "started_at", "saved_at", "saved_by", "place", "counts",
+                                   "recognized")}
+
+
+_KEY_TIME_RE = re.compile(r"(\d{4}-\d\d-\d\d)T(\d\d)[:-](\d\d)[:-](\d\d(?:\.\d+)?)Z?")
+
+
+def report_date(report: dict) -> str:
+    """When the simulation ran: started_at, else saved_at, else the time in the key; "" if unknown."""
+    if report.get("started_at") or report.get("saved_at"):
+        return str(report.get("started_at") or report.get("saved_at"))
+    found = _KEY_TIME_RE.search(str(report.get("key", "")))
+    return f"{found.group(1)}T{found.group(2)}:{found.group(3)}:{found.group(4)}Z" if found else ""
+
+
+def sort_reports(reports: list[dict]) -> list[dict]:
+    """Newest first; undated ones last."""
+    return sorted(reports, key=lambda r: (report_date(r) != "", report_date(r)), reverse=True)
 
 
 def local_report_files(root: Path) -> list[Path]:
@@ -139,8 +162,50 @@ def local_report_files(root: Path) -> list[Path]:
     return files
 
 
+def local_reports(root: Path) -> dict[str, Path]:
+    """The project's report files by key ("file:<path relative to the project>")."""
+    out = {}
+    for path in local_report_files(root):
+        try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            rel = path.name
+        out["file:" + rel] = path
+    return out
+
+
+def local_stamp(root: Path) -> str:
+    """Changes when a local report is added, changed or removed (cheap: no file is read)."""
+    parts = []
+    for path in local_report_files(root):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        parts.append(f"{path.name}:{st.st_size}:{st.st_mtime_ns}")
+    return f"{len(parts)}|" + "|".join(parts)[-2000:]
+
+
 def new_key(now: datetime | None = None) -> str:
     return "playtest-" + (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def save_local_report(root: Path, report: dict, *, saved_by: str, now: datetime | None = None) -> tuple[str, Path]:
+    """Writes a report into <root>/.robops/playtests/ (read by the dashboard). Returns (key, file)."""
+    now = now or datetime.now(UTC)
+    data = {"format": REPORT_FORMAT, **report}
+    data.setdefault("saved_at", now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    data.setdefault("saved_by", saved_by)
+    folder = root / ".robops" / "playtests"
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = new_key(now).replace(":", "-")
+    path, n = folder / f"{stem}.json", 1
+    while path.exists():
+        path, n = folder / f"{stem}-{n}.json", n + 1
+    tmp = folder / f".{path.name}.tmp"                    # never a half-written report in the list
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return "file:" + path.relative_to(root).as_posix(), path
 
 
 def instructions(datastore: str) -> str:
@@ -148,7 +213,7 @@ def instructions(datastore: str) -> str:
     return f"""\
 Each time you finish simulating players in Roblox Studio (through the Roblox Studio MCP), save a report so that I can read it in the robops dashboard ("Simulated players" view).
 
-Save it with the tool that runs Luau code in Studio (run_code), in edit mode (play mode stopped), with this code, after replacing REPORT by the real results:
+If you have the robops tool save_playtest_report, use it and ignore the rest of this message. Otherwise, save it with the tool that runs Luau code in Studio (run_code), in edit mode (play mode stopped), with this code, after replacing REPORT by the real results:
 
 local DataStoreService = game:GetService("DataStoreService")
 local REPORT = {{
@@ -189,33 +254,33 @@ Rules:
 # --------------------------------------------------------- Claude Desktop logs
 
 _TIME_RE = re.compile(r"(\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?)")
-_SERVER_RE = re.compile(r"\[([^\]]+)\]")
+_BRACKET_RE = re.compile(r"\[([^\]]+)\]")
+_LEVELS = {"info", "debug", "warn", "warning", "error", "trace", "log"}
 _STUDIO_RE = re.compile(r"roblox|studio|rbx", re.IGNORECASE)
+_MESSAGE_RE = re.compile(r"Message from (client|server):\s?(.*)$")
+# Summarized messages (Claude Desktop 2026):  method="tools/call" id=4 params   /   id=4 result(1 blocks)
+_SUMMARY_REQUEST_RE = re.compile(r'^method="([^"]+)"(?:\s+id=(\S+))?')
+_SUMMARY_ANSWER_RE = re.compile(r"^id=(\S+)\s+(result|error)\b(?:\(([^)]*)\))?")
+_CONNECTION_END = ("Shutting down server", "Server transport closed", "Server disconnected", "Server started")
 _DECODER = json.JSONDecoder()
 MAX_LOG_BYTES = 8 * 1024 * 1024
 SESSION_GAP = timedelta(minutes=30)
 
 
 def claude_log_dirs() -> list[Path]:
-    """Where Claude Desktop writes its MCP logs (Windows, macOS, Linux)."""
-    dirs = []
-    if os.environ.get("APPDATA"):
-        dirs.append(Path(os.environ["APPDATA"]) / "Claude" / "logs")
-    home = Path.home()
-    dirs += [home / "AppData" / "Roaming" / "Claude" / "logs", home / "Library" / "Logs" / "Claude",
-             home / ".config" / "Claude" / "logs"]
-    unique: list[Path] = []
-    for d in dirs:
-        if d not in unique:
-            unique.append(d)
-    return unique
+    """Where Claude Desktop writes its MCP logs (Windows, including the MSIX install, macOS, Linux)."""
+    from . import claude_desktop
+
+    return claude_desktop.log_dirs()
 
 
-def studio_log_files(directory: Path) -> list[Path]:
+def studio_log_files(directory: Path, names: tuple[str, ...] | list[str] = ()) -> list[Path]:
     """The Roblox Studio server's own log files, otherwise the shared mcp.log."""
     if not directory.is_dir():
         return []
-    own = sorted(p for p in directory.glob("mcp*.log*") if p.is_file() and _STUDIO_RE.search(p.name))
+    wanted = {f"mcp-server-{n}.log".lower() for n in names}
+    own = sorted(p for p in directory.glob("mcp*.log*") if p.is_file() and p.name != "mcp.log"
+                 and (_STUDIO_RE.search(p.name) or p.name.lower() in wanted))
     if own:
         return own
     shared = directory / "mcp.log"
@@ -231,13 +296,13 @@ def _tail_lines(path: Path, max_bytes: int = MAX_LOG_BYTES) -> list[str]:
     return lines[1:] if size > max_bytes else lines            # the first line may be cut
 
 
-def _first_json(line: str) -> dict | None:
-    start = line.find("{")
+def _first_json(text: str) -> dict | None:
+    start = text.find("{")
     while start != -1:
         try:
-            obj, _ = _DECODER.raw_decode(line, start)
+            obj, _ = _DECODER.raw_decode(text, start)
         except ValueError:
-            start = line.find("{", start + 1)
+            start = text.find("{", start + 1)
             continue
         return obj if isinstance(obj, dict) else None
     return None
@@ -269,53 +334,152 @@ def _result_text(result: Any) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-def parse_log_lines(lines: list[str], *, shared: bool = False) -> list[dict]:
-    """Tool calls (request + response paired by id) found in Claude Desktop MCP log lines."""
-    pending: dict[Any, dict] = {}
-    calls: list[dict] = []
+def _server_of(line: str, before: int) -> str | None:
+    """The server's name: the [bracket] before the message that is not a log level.
+
+    Per-server files write "[Roblox Studio] [info]", mcp.log writes "[info] [Roblox Studio]".
+    """
+    for name in _BRACKET_RE.findall(line[:before]):
+        if name.strip().lower() not in _LEVELS:
+            return name.strip()
+    return None
+
+
+def _id(raw: Any) -> str:
+    return str(raw).strip().strip('"').rstrip(",")
+
+
+class _Calls:
+    """Pairs tool calls with their answers, per connection (ids restart at 0 on each connection)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.pending: dict[tuple[str | None, str], dict] = {}
+
+    def reset(self, server: str | None) -> None:
+        for key in [k for k in self.pending if k[0] == server]:
+            del self.pending[key]
+
+    def request(self, server: str | None, msg_id: Any, time: datetime | None, tool: str | None,
+                arguments: dict, detailed: bool) -> None:
+        call = {"time": time, "server": server, "tool": tool, "arguments": arguments, "detailed": detailed,
+                "result": None, "is_error": None, "duration_ms": None}
+        self.pending[(server, _id(msg_id))] = call
+        self.calls.append(call)
+
+    def answer(self, server: str | None, msg_id: Any, time: datetime | None, *, result: str | None,
+               is_error: bool) -> None:
+        call = self.pending.pop((server, _id(msg_id)), None)
+        if call is None:
+            return
+        call["result"], call["is_error"] = result, is_error
+        if time and call["time"]:
+            call["duration_ms"] = max(0, int((time - call["time"]).total_seconds() * 1000))
+
+    def json_message(self, server: str | None, msg: dict, time: datetime | None) -> None:
+        method = msg.get("method")
+        if method == "initialize":
+            self.reset(server)
+        if method == "tools/call" and "id" in msg:
+            raw = msg.get("params")
+            params: dict = raw if isinstance(raw, dict) else {}
+            raw = params.get("arguments")
+            arguments: dict = raw if isinstance(raw, dict) else {}
+            self.request(server, msg["id"], time, str(params.get("name") or "?"), arguments, True)
+        elif method is None and "id" in msg and ("result" in msg or "error" in msg):
+            if "error" in msg:
+                err = msg["error"] if isinstance(msg["error"], dict) else {"message": msg["error"]}
+                self.answer(server, msg["id"], time, result=str(err.get("message", err)), is_error=True)
+            else:
+                res = msg["result"]
+                self.answer(server, msg["id"], time, result=_result_text(res),
+                            is_error=bool(isinstance(res, dict) and res.get("isError")))
+
+
+def parse_log_lines(lines: list[str], *, shared: bool = False, servers: tuple[str, ...] | list[str] = ()) -> list[dict]:
+    """Tool calls (request + answer paired by id) found in Claude Desktop MCP log lines.
+
+    shared: lines from mcp.log, which mixes every server: only the Roblox Studio one is kept
+    (its name is in servers, or contains roblox/studio/rbx).
+    """
+    wanted = {s.lower() for s in servers}
+
+    def is_studio(server: str | None) -> bool:
+        return server is not None and (server.lower() in wanted or bool(_STUDIO_RE.search(server)))
+
+    found = _Calls()
+    messages = 0
+    for line in lines:
+        m = _MESSAGE_RE.search(line)
+        if not m:
+            if any(marker in line for marker in _CONNECTION_END):
+                found.reset(_server_of(line, len(line)))
+            continue
+        server = _server_of(line, m.start())
+        if shared and not is_studio(server):
+            continue
+        messages += 1
+        direction, rest = m.group(1), m.group(2).strip()
+        time = _when(line)
+        if rest.startswith("{"):                            # whole JSON-RPC message (older versions)
+            msg = _first_json(rest)
+            if msg:
+                found.json_message(server, msg, time)
+            continue
+        if direction == "client":
+            req = _SUMMARY_REQUEST_RE.match(rest)
+            if not req:
+                continue
+            if req.group(1) == "initialize":
+                found.reset(server)
+            elif req.group(1) == "tools/call" and req.group(2):
+                found.request(server, req.group(2), time, None, {}, False)
+        else:
+            ans = _SUMMARY_ANSWER_RE.match(rest)
+            if not ans:
+                continue
+            detail = ans.group(3) or ""
+            failed = ans.group(2) == "error" or "error" in detail.lower()
+            found.answer(server, ans.group(1), time, is_error=failed,
+                         result=f"Error ({detail})" if ans.group(2) == "error" and detail else None)
+    if messages or found.calls:
+        return found.calls
+    # No "Message from" line: some servers log their own JSON-RPC traffic in their file.
     for line in lines:
         if "jsonrpc" not in line:
             continue
-        servers = _SERVER_RE.findall(line)
-        server = next((s for s in servers if s.lower() not in ("info", "debug", "warn", "warning", "error")), None)
-        if shared and not (server and _STUDIO_RE.search(server)):
-            continue                                           # mcp.log mixes every server
-        msg = _first_json(line)
-        if not msg or msg.get("jsonrpc") != "2.0":
+        server = _server_of(line, line.find("{") if "{" in line else len(line))
+        if shared and not is_studio(server):
             continue
-        time = _when(line)
-        if msg.get("method") == "tools/call" and "id" in msg:
-            raw_params = msg.get("params")
-            params: dict = raw_params if isinstance(raw_params, dict) else {}
-            call = {"id": msg["id"], "time": time, "server": server, "tool": str(params.get("name", "?")),
-                    "arguments": params.get("arguments") if isinstance(params.get("arguments"), dict) else {},
-                    "result": None, "is_error": None, "duration_ms": None}
-            pending[msg["id"]] = call
-            calls.append(call)
-        elif "id" in msg and ("result" in msg or "error" in msg) and msg["id"] in pending:
-            call = pending.pop(msg["id"])
-            if "error" in msg:
-                err = msg["error"] if isinstance(msg["error"], dict) else {"message": msg["error"]}
-                call["result"], call["is_error"] = str(err.get("message", err)), True
-            else:
-                call["result"] = _result_text(msg["result"])
-                call["is_error"] = bool(isinstance(msg["result"], dict) and msg["result"].get("isError"))
-            if time and call["time"]:
-                call["duration_ms"] = int((time - call["time"]).total_seconds() * 1000)
-    return calls
+        msg = _first_json(line)
+        if msg and msg.get("jsonrpc") == "2.0":
+            found.json_message(server, msg, _when(line))
+    return found.calls
 
 
-def studio_activity(directories: list[Path], *, max_sessions: int = 20, max_text: int = 20000) -> dict:
-    """Claude's tool calls to Roblox Studio, grouped in sessions (newest first)."""
-    files: list[Path] = []
-    for directory in directories:
-        files = studio_log_files(directory)
-        if files:
-            break
+def _newest(files: list[Path]) -> float:
+    times = []
+    for f in files:
+        try:
+            times.append(f.stat().st_mtime)
+        except OSError:
+            pass
+    return max(times, default=0.0)
+
+
+def studio_activity(directories: list[Path], *, servers: tuple[str, ...] | list[str] = (),
+                    max_sessions: int = 20, max_text: int = 20000) -> dict:
+    """Claude's tool calls to Roblox Studio, grouped in sessions (newest first).
+
+    servers: names of the Roblox Studio server in Claude Desktop's config, if known.
+    """
+    candidates = [(d, studio_log_files(d, servers)) for d in directories]
+    candidates = [(d, f) for d, f in candidates if f]
+    files: list[Path] = max(candidates, key=lambda c: _newest(c[1]))[1] if candidates else []
     calls: list[dict] = []
     for path in files:
         try:
-            calls += parse_log_lines(_tail_lines(path), shared=path.name == "mcp.log")
+            calls += parse_log_lines(_tail_lines(path), shared=path.name == "mcp.log", servers=servers)
         except OSError:
             continue
     calls = [c for c in calls if c["time"] is not None]
@@ -329,6 +493,7 @@ def studio_activity(directories: list[Path], *, max_sessions: int = 20, max_text
 
     def clean(call: dict) -> dict:
         return {"time": call["time"].isoformat(timespec="seconds"), "server": call["server"], "tool": call["tool"],
+                "detailed": call["detailed"],
                 "arguments": {k: _text(v, max_text) for k, v in call["arguments"].items()},
                 "result": _text(call["result"], max_text), "is_error": call["is_error"],
                 "duration_ms": call["duration_ms"]}
@@ -337,9 +502,12 @@ def studio_activity(directories: list[Path], *, max_sessions: int = 20, max_text
     for group in reversed(sessions[-max_sessions:]):
         tools: dict[str, int] = {}
         for c in group:
-            tools[c["tool"]] = tools.get(c["tool"], 0) + 1
+            if c["tool"]:
+                tools[c["tool"]] = tools.get(c["tool"], 0) + 1
         out.append({"start": group[0]["time"].isoformat(timespec="seconds"),
                     "end": group[-1]["time"].isoformat(timespec="seconds"),
                     "calls": [clean(c) for c in group[-300:]], "count": len(group),
-                    "errors": sum(1 for c in group if c["is_error"]), "tools": tools})
-    return {"checked": [str(d) for d in directories], "files": [str(f) for f in files], "sessions": out}
+                    "errors": sum(1 for c in group if c["is_error"]), "tools": tools,
+                    "detailed": any(c["detailed"] for c in group)})
+    return {"checked": [str(d) for d in directories], "files": [str(f) for f in files], "sessions": out,
+            "detailed": any(s["detailed"] for s in out)}
