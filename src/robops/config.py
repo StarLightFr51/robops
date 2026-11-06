@@ -20,13 +20,15 @@ DEFAULT_CONFIG = "robops.toml"
 
 # Fields accepted in each table: anything else is a typo that would otherwise be
 # silently ignored (e.g. "restart_server" deploying with the default value).
-ROOT_KEYS = {"api_key_env", "build", "players", "environments"}
+ROOT_KEYS = {"api_key_env", "build", "players", "playtests", "environments"}
 BUILD_KEYS = {"command"}
 ENV_KEYS = {"universe_id", "places", "version_type", "restart_servers", "build_command",
-            "datastores", "api_key_env", "players"}
+            "datastores", "api_key_env", "players", "playtests"}
 PLACE_KEYS = {"name", "place_id", "file", "display_name", "description", "server_size"}
 DATASTORE_KEYS = {"name", "file", "scope"}
 PLAYERS_KEYS = {"datastore", "key_prefix", "scope"}
+PLAYTESTS_KEYS = {"datastore"}
+DEFAULT_PLAYTESTS_DATASTORE = "RobopsPlaytests"
 
 _TRUE = {"true", "yes", "on", "1"}
 _FALSE = {"false", "no", "off", "0", ""}
@@ -69,6 +71,8 @@ class Environment:
     datastores: list[DatastoreSeed] = field(default_factory=list)
     api_key_env: str = "ROBLOX_API_KEY"
     players: PlayersConfig = field(default_factory=PlayersConfig)
+    # DataStore where Claude saves its simulated-player reports (dashboard "Simulated players").
+    playtests_datastore: str = DEFAULT_PLAYTESTS_DATASTORE
 
 
 @dataclass
@@ -83,6 +87,7 @@ class Config:
     default_key_env: str = "ROBLOX_API_KEY"
     default_build: str | None = None
     default_players: dict = field(default_factory=dict)
+    default_playtests: dict = field(default_factory=dict)
 
     @property
     def names(self) -> list[str]:
@@ -189,6 +194,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
     players = raw.get("players") or {}
     if not isinstance(players, dict):
         raise ConfigError("[players] must be a section.")
+    playtests = raw.get("playtests") or {}
+    if not isinstance(playtests, dict):
+        raise ConfigError("[playtests] must be a section.")
+    _check_keys(playtests, PLAYTESTS_KEYS, "playtests")
 
     envs_raw = raw.get("environments")
     if not isinstance(envs_raw, dict) or not envs_raw:
@@ -204,6 +213,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
         default_key_env=default_key_env,
         default_build=default_build,
         default_players=players,
+        default_playtests=playtests,
     )
 
 
@@ -262,7 +272,19 @@ def _parse_environment(cfg: Config, env_name: str, env_raw: dict) -> Environment
         datastores=seeds,
         api_key_env=_opt_str(env_raw.get("api_key_env"), f"{where}.api_key_env") or cfg.default_key_env,
         players=_parse_players(cfg.default_players, env_raw.get("players") or {}, f"{where}.players"),
+        playtests_datastore=_parse_playtests(cfg.default_playtests, env_raw.get("playtests") or {}, f"{where}.playtests"),
     )
+
+
+def _parse_playtests(defaults_raw: dict, env_raw: Any, where: str) -> str:
+    if not isinstance(env_raw, dict):
+        raise ConfigError(f"{where} must be a section.")
+    _check_keys(env_raw, PLAYTESTS_KEYS, where)
+    name = env_raw.get("datastore", _expand(defaults_raw, "playtests").get("datastore", DEFAULT_PLAYTESTS_DATASTORE))
+    name = _opt_str(name, f"{where}.datastore")
+    if not name:
+        raise ConfigError(f"{where}.datastore must not be empty.")
+    return name
 
 
 def _parse_players(defaults_raw: dict, env_players: Any, where: str) -> PlayersConfig:

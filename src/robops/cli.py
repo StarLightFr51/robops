@@ -14,6 +14,7 @@ from . import __version__, updater
 from . import output as out
 from . import players as pl
 from .checks import check_environment
+from .claude_desktop import ClaudeDesktopError
 from .client import OpenCloudClient, RobloxApiError
 from .config import DEFAULT_CONFIG, ConfigError, load_config
 from .deploy import DeployError, DeployOptions, deploy, overwrite_entry
@@ -607,7 +608,8 @@ def cmd_dashboard(args) -> int:
                  "and the Deploy / Backup buttons need a token with Actions: Read and write.")
     app = dash.Dashboard(config_path, github_repo=repo, github_token=token,
                          deploy_workflow=args.deploy_workflow, backup_workflow=args.backup_workflow,
-                         sample_every=max(0.0, args.sample_every) * 60)
+                         sample_every=max(0.0, args.sample_every) * 60,
+                         claude_logs=Path(args.claude_logs) if args.claude_logs else None)
     dash.serve(app, port=args.port, open_browser=not args.no_browser)
     return EXIT_OK
 
@@ -632,6 +634,101 @@ def cmd_stats_record(args) -> int:
         out.success(f"{name}: {sample['playing']} playing, {sample['visits']} visits recorded "
                     f"in {history.path(name).relative_to(cfg.root)}")
     return EXIT_FAILURE if failures else EXIT_OK
+
+
+def _project_dir(args) -> Path:
+    """The game folder: --project, otherwise the folder of robops.toml (-c)."""
+    project = Path(args.project).expanduser() if getattr(args, "project", None) else Path(args.config).resolve().parent
+    if not project.is_dir():
+        raise UsageError(f"Project folder not found: {project}")
+    return project.resolve()
+
+
+def _config_files(args) -> list[Path] | None:
+    return [Path(f).expanduser() for f in args.config_file] if getattr(args, "config_file", None) else None
+
+
+def cmd_mcp_serve(args) -> int:
+    from . import mcp_server
+
+    return mcp_server.serve(_project_dir(args))
+
+
+def cmd_mcp_install(args) -> int:
+    from . import claude_desktop as cd
+
+    project = _project_dir(args)
+    if not (project / "robops.toml").is_file():
+        out.warn(f"No robops.toml in {project}: run this from your game folder, or pass --project <folder>.")
+    changes = cd.install(project, name=args.name, files=_config_files(args))
+    for change in changes:
+        if change.status == "unchanged":
+            out.success(f"Already set up in {change.path}")
+            continue
+        out.success(f"robops {'added to' if change.status == 'added' else 'updated in'} {change.path}"
+                    + (f" (previous version kept in {change.backup.name})" if change.backup else ""))
+        if change.previous_project:
+            out.warn(f"The '{args.name}' entry pointed to another project ({change.previous_project}): it now points "
+                     f"to {project}. To keep both, install this one with --name robops-<game>.")
+    entry = cd.server_entry(project)
+    if any(c.status != "unchanged" for c in changes):
+        out.notice(cd.RESTART)
+    state = cd.status(project, name=args.name, files=_config_files(args))
+    if state["studio"]:
+        out.success(f"Roblox Studio MCP found in Claude Desktop: {', '.join(state['studio'])}")
+    else:
+        out.warn("Roblox Studio's MCP server is not in Claude Desktop's config yet. " + cd.STUDIO_HINT)
+    out.info("\nThen, in Claude Desktop: \"+\" → robops → simulate_players, or ask Claude: "
+             "\"Simulate 5 players on my game in Studio and save the report with robops\".\n"
+             "Reports appear in robops dashboard → Simulated players.\n"
+             f"For Claude Code instead:  {cd.claude_code_command(entry, args.name)}")
+    return EXIT_OK
+
+
+def cmd_mcp_uninstall(args) -> int:
+    from . import claude_desktop as cd
+
+    changes = cd.uninstall(name=args.name, files=_config_files(args))
+    if not changes:
+        raise UsageError(cd.NOT_FOUND)
+    for change in changes:
+        if change.status == "removed":
+            out.success(f"robops removed from {change.path}")
+        else:
+            out.info(f"No '{args.name}' entry in {change.path}")
+    return EXIT_OK
+
+
+def cmd_mcp_status(args) -> int:
+    from . import claude_desktop as cd
+    from . import playtests as pt
+
+    project = _project_dir(args)
+    state = cd.status(project, name=args.name, files=_config_files(args))
+    if not state["found"]:
+        out.warn(cd.NOT_FOUND)
+    for config in state["configs"]:
+        out.info(f"\n{config['path']}{'' if config['exists'] else ' (does not exist yet)'}")
+        if config["error"]:
+            out.error(config["error"])
+            continue
+        robops = config["robops"]
+        if not robops:
+            out.warn("  robops: not installed (robops mcp install)")
+        else:
+            where = "this project" if robops["this_project"] else f"another project: {robops['project']}"
+            (out.success if robops["this_project"] and robops["command_found"] else out.warn)(
+                f"  robops: installed for {where}")
+            if not robops["command_found"]:
+                out.warn(f"  the program it starts does not exist any more: {robops['command']} "
+                         "(run robops mcp install again)")
+        if config["studio"]:
+            out.success(f"  Roblox Studio MCP: {', '.join(config['studio'])}")
+        else:
+            out.warn("  Roblox Studio MCP: not found. " + cd.STUDIO_HINT)
+    reports = pt.sort_reports([{"key": k} for k in pt.local_reports(project)])
+    out.info(f"\nReports in {project}: {len(reports)}" + (f" (latest: {reports[0]['key']})" if reports else ""))
+    return EXIT_OK
 
 
 def _point_to_action_repo(workflow: str, action_repo: str) -> str:
@@ -894,9 +991,36 @@ def build_parser() -> argparse.ArgumentParser:
                    help="deploy workflow of the game repository (default: detected, e.g. roblox-deploy.yml)")
     p.add_argument("--backup-workflow", metavar="FILE.yml",
                    help="backup workflow of the game repository (default: detected, e.g. roblox-backup.yml)")
+    p.add_argument("--claude-logs", metavar="FOLDER",
+                   help="Claude Desktop's log folder, for Claude's actions in Studio (default: the usual place)")
     p.add_argument("--sample-every", type=float, default=5, metavar="MINUTES",
                    help="record the live stats for the Charts view every N minutes (default 5, 0 = off)")
     p.set_defaults(func=cmd_dashboard)
+
+    mcp = sub.add_parser("mcp", parents=[common],
+                         help="robops MCP server: Claude saves its player simulation reports for the dashboard")\
+        .add_subparsers(dest="mcp_cmd", required=True, metavar="<action>")
+
+    def _mcp_common(p: argparse.ArgumentParser, *, config_file: bool = True) -> None:
+        p.add_argument("--project", metavar="FOLDER", help="game folder (default: the folder of robops.toml)")
+        if config_file:
+            p.add_argument("--name", default="robops", help="server name in Claude Desktop (default: robops)")
+            p.add_argument("--config-file", action="append", metavar="PATH",
+                           help="claude_desktop_config.json to use (default: the ones Claude Desktop reads)")
+
+    p = mcp.add_parser("install", parents=[common], help="add robops to Claude Desktop (then restart Claude Desktop)")
+    _mcp_common(p)
+    p.set_defaults(func=cmd_mcp_install)
+    p = mcp.add_parser("status", parents=[common], help="is robops (and Roblox Studio's MCP) set up in Claude Desktop?")
+    _mcp_common(p)
+    p.set_defaults(func=cmd_mcp_status)
+    p = mcp.add_parser("uninstall", parents=[common], help="remove robops from Claude Desktop")
+    p.add_argument("--name", default="robops", help="server name in Claude Desktop (default: robops)")
+    p.add_argument("--config-file", action="append", metavar="PATH", help="claude_desktop_config.json to use")
+    p.set_defaults(func=cmd_mcp_uninstall)
+    p = mcp.add_parser("serve", parents=[common], help="run the MCP server on stdin/stdout (started by Claude)")
+    _mcp_common(p, config_file=False)
+    p.set_defaults(func=cmd_mcp_serve)
 
     stats = sub.add_parser("stats", parents=[common], help="live stats history (Charts view of the dashboard)")\
         .add_subparsers(dest="stats_cmd", required=True, metavar="<action>")
@@ -926,7 +1050,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     code = _run(args)
-    if args.command != "self-update":
+    if args.command != "self-update" and getattr(args, "mcp_cmd", None) != "serve":
         # Daily check: only notifies unless ROBOPS_AUTO_UPDATE=1 (disabled in CI and with pip).
         updater.maybe_auto_update()
     return code
@@ -938,7 +1062,7 @@ def _run(args) -> int:
     except (UsageError, ConfigError) as exc:
         out.error(str(exc))
         return EXIT_USAGE
-    except (DeployError, pl.PlayerError) as exc:
+    except (DeployError, pl.PlayerError, ClaudeDesktopError) as exc:
         out.error(str(exc))
         return EXIT_FAILURE
     except RobloxApiError as exc:

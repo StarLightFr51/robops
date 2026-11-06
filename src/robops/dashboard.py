@@ -36,8 +36,10 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
+from . import claude_desktop as cd
 from . import output as out
 from . import players as pl
+from . import playtests as pt
 from .checks import check_environment
 from .client import OpenCloudClient, RobloxApiError
 from .config import ConfigError, Environment, load_config
@@ -87,6 +89,8 @@ class Dashboard:
     deploy_workflow: str | None = None        # forced file name (--deploy-workflow), otherwise detected
     backup_workflow: str | None = None
     sample_every: float = 300                 # seconds between two live samples (0 = no recording)
+    claude_logs: Path | None = None           # Claude Desktop's log folder (default: the usual places)
+    claude_config_files: list[Path] | None = None   # claude_desktop_config.json (default: the ones it reads)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _history: History | None = None
     _analysis_cache: dict = field(default_factory=dict)
@@ -462,6 +466,120 @@ class Dashboard:
         return {"workflow": {"file": workflow_file(workflow), "name": workflow.get("name")},
                 **deployment_stats(gh.runs(workflow_file(workflow), per_page=100))}
 
+    # ------------------------------------------------------ simulated players
+
+    def _local_playtests(self) -> dict[str, Path]:
+        return pt.local_reports(self.root)
+
+    def playtests(self, name: str) -> dict:
+        """Reports saved by Claude: the DataStore of the environment + local JSON files."""
+        env = self.env(name)
+        reports: list[dict] = []
+        remote_error = None
+        try:
+            client = self.client(env)
+            ids: list[str] = []
+            cursor = None
+            while len(ids) < 500:
+                page, cursor = client.list_entries_page(env.universe_id, env.playtests_datastore, page_token=cursor)
+                ids += page
+                if not cursor:
+                    break
+            latest = sorted(ids, key=lambda k: k.rsplit("/", 1)[-1], reverse=True)[:40]
+
+            def load(entry_id: str) -> dict:
+                scope, key = pl.split_scoped(entry_id, None)
+                entry = client.get_entry(env.universe_id, env.playtests_datastore, key, scope=scope)
+                return pt.summary(pt.normalize_report(entry_id, entry.get("value"), "datastore"))
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                loaded = list(pool.map(lambda i: _attempt(lambda: load(i)), latest))
+            reports += [item["ok"] for item in loaded if "ok" in item]      # an unreadable entry is skipped
+        except RobloxApiError as exc:
+            if exc.status != 404:                          # 404: no report saved yet in this universe
+                remote_error = exc.describe()
+        except DashboardError as exc:
+            remote_error = str(exc)
+        for key, path in self._local_playtests().items():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                reports.append({"key": key, "source": "file", "title": path.name, "started_at": None,
+                                "saved_at": None, "saved_by": None, "place": None,
+                                "counts": {"players": 0, "outcomes": {}, "findings": {}}, "recognized": False,
+                                "error": f"Unreadable file: {exc}"})
+                continue
+            reports.append(pt.summary(pt.normalize_report(key, value, "file")))
+        return {"datastore": env.playtests_datastore, "universe_id": env.universe_id,
+                "reports": pt.sort_reports(reports), "remote_error": remote_error,
+                "stamp": pt.local_stamp(self.root)}
+
+    def playtests_stamp(self) -> dict:
+        """Cheap check, polled by the page: changes when Claude saves a report through robops."""
+        return {"stamp": pt.local_stamp(self.root)}
+
+    def playtest(self, name: str, key: str) -> dict:
+        env = self.env(name)
+        if key.startswith("file:"):
+            path = self._local_playtests().get(key)
+            if path is None:
+                raise DashboardError(404, f"Report not found: {key}")
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                raise DashboardError(400, f"{path.name} is not valid JSON: {exc}") from exc
+            return pt.normalize_report(key, value, "file")
+        scope, entry_key = pl.split_scoped(key, None)
+        entry = self.client(env).get_entry(env.universe_id, env.playtests_datastore, entry_key, scope=scope)
+        return pt.normalize_report(key, entry.get("value"), "datastore")
+
+    def playtest_instructions(self, name: str) -> dict:
+        env = self.env(name)
+        return {"datastore": env.playtests_datastore, "text": pt.instructions(env.playtests_datastore)}
+
+    def import_playtest(self, body: dict) -> dict:
+        """A report pasted in the page (e.g. copied from the conversation with Claude)."""
+        report = body.get("report")
+        if isinstance(report, str):
+            try:
+                report = json.loads(report)
+            except ValueError as exc:
+                raise DashboardError(400, f"The pasted text is not valid JSON: {exc}") from exc
+        if not isinstance(report, dict) or not pt.is_report(report):
+            raise DashboardError(400, "This JSON is not a report: it needs a players or findings list "
+                                      f"(format {pt.REPORT_FORMAT}).")
+        key, path = pt.save_local_report(self.root, report, saved_by="robops dashboard (pasted)")
+        self.audit("playtest.import", None, file=str(_rel(path, self.root)))
+        return {"key": key, "message": f"Report saved in {_rel(path, self.root)}."}
+
+    def claude_activity(self) -> dict:
+        dirs = [self.claude_logs] if self.claude_logs else pt.claude_log_dirs()
+        return pt.studio_activity(dirs, servers=self._claude_status()["studio"])
+
+    def _claude_status(self) -> dict:
+        try:
+            return cd.status(self.root, files=self.claude_config_files)
+        except OSError as exc:
+            return {"found": False, "configs": [], "installed": False, "studio": [], "entry": None, "error": str(exc)}
+
+    def claude_setup(self) -> dict:
+        """Is Claude Desktop ready: robops' tool for the reports, and Roblox Studio's MCP server."""
+        state = self._claude_status()
+        entry = cd.server_entry(self.root)
+        return {**state, "entry": entry, "restart": cd.RESTART, "studio_hint": cd.STUDIO_HINT,
+                "claude_code": cd.claude_code_command(entry), "snippet": cd.manual_snippet(entry)}
+
+    def claude_install(self, body: dict) -> dict:
+        try:
+            changes = cd.install(self.root, files=self.claude_config_files)
+        except cd.ClaudeDesktopError as exc:
+            raise DashboardError(400, str(exc)) from exc
+        changed = [c for c in changes if c.status != "unchanged"]
+        self.audit("claude.install", None, files=[str(c.path) for c in changed])
+        if not changed:
+            return {"message": "robops was already set up in Claude Desktop."}
+        return {"message": "robops added to Claude Desktop. " + cd.RESTART}
+
     # --------------------------------------------------------------- actions
 
     def restart(self, name: str, body: dict) -> dict:
@@ -640,6 +758,14 @@ def _routes(app: Dashboard) -> list[tuple[str, re.Pattern, Callable[..., Any]]]:
         ("GET", re.compile(rf"/api/env/{env}/history"), lambda p, b, env: app.history_view(env, q(p, "range"))),
         ("GET", re.compile(rf"/api/env/{env}/playerbase"), lambda p, b, env: app.playerbase(env, q(p, "backup"))),
         ("GET", re.compile(r"/api/stats/deployments"), lambda p, b: app.deployment_stats()),
+        ("GET", re.compile(rf"/api/env/{env}/playtests"), lambda p, b, env: app.playtests(env)),
+        ("GET", re.compile(rf"/api/env/{env}/playtest"), lambda p, b, env: app.playtest(env, q(p, "key") or "")),
+        ("GET", re.compile(rf"/api/env/{env}/playtests/instructions"), lambda p, b, env: app.playtest_instructions(env)),
+        ("GET", re.compile(r"/api/claude/studio"), lambda p, b: app.claude_activity()),
+        ("GET", re.compile(r"/api/claude/setup"), lambda p, b: app.claude_setup()),
+        ("GET", re.compile(r"/api/playtests/stamp"), lambda p, b: app.playtests_stamp()),
+        ("POST", re.compile(r"/api/claude/install"), lambda p, b: app.claude_install(b)),
+        ("POST", re.compile(r"/api/playtests/import"), lambda p, b: app.import_playtest(b)),
         ("GET", re.compile(rf"/api/env/{env}/player"), lambda p, b, env: app.player(env, q(p, "q") or "")),
         ("GET", re.compile(rf"/api/env/{env}/datastores"), lambda p, b, env: app.datastores(env, q(p, "prefix"))),
         ("GET", re.compile(rf"/api/env/{env}/entries"),

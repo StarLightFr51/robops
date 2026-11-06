@@ -3,7 +3,7 @@
    coming from Roblox or GitHub is inserted with textContent, never as HTML. */
 
 const TOKEN_KEY = "robops-token";
-const VIEWS = ["overview", "charts", "deployments", "players", "data", "setup"];
+const VIEWS = ["overview", "charts", "deployments", "players", "playtests", "data", "setup"];
 const state = {
   token: null, summary: null, env: null, view: "overview",
   live: {}, deployments: null, backups: null, player: null,
@@ -116,6 +116,7 @@ function toast(message, bad = false) {
 /* Opens a confirmation. For protected environments (production…) the name must be typed. */
 function openModal({ title, build, okLabel = "Confirm", danger = false, typed = null, onSubmit }) {
   const dialog = $("modal"), body = $("modal-body"), ok = $("modal-ok");
+  dialog.classList.remove("wide");                 // a build() may widen it again
   $("modal-title").textContent = title;
   put(body);
   const errorLine = h("p", { class: "error-text", hidden: true });
@@ -249,7 +250,7 @@ function render() {
   renderBand();
   const view = $("view");
   put(view);
-  ({ overview: viewOverview, charts: viewCharts, deployments: viewDeployments, players: viewPlayers, data: viewData, setup: viewSetup })[state.view](view);
+  ({ overview: viewOverview, charts: viewCharts, deployments: viewDeployments, players: viewPlayers, playtests: viewPlaytests, data: viewData, setup: viewSetup })[state.view](view);
 }
 
 function panel(title, note, ...content) {
@@ -950,6 +951,281 @@ function drawBackupCharts(section) {
   }).catch((err) => put(cards, notice(err.message, true)));
 }
 
+/* ------------------------------------------------------ simulated players */
+
+const OUTCOME = {
+  completed: ["ok", "Completed"], stuck: ["busy", "Stuck"], quit: ["busy", "Quit"], error: ["bad", "Error"],
+  other: ["idle", "Other"], unknown: ["idle", "No outcome"],
+};
+const SEVERITY = { high: ["bad", "High"], medium: ["busy", "Medium"], low: ["idle", "Low"] };
+
+function outcomeText(outcomes) {
+  const parts = Object.entries(outcomes || {}).sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${n} ${(OUTCOME[k] || OUTCOME.other)[1].toLowerCase()}`);
+  return parts.join(", ") || "—";
+}
+function findingsText(f) {
+  const parts = ["high", "medium", "low"].filter((k) => f?.[k]).map((k) => `${f[k]} ${k}`);
+  return parts.join(", ") || "none";
+}
+function secondsText(s) {
+  if (typeof s !== "number") return "—";
+  return s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${String(Math.round(s % 60)).padStart(2, "0")} s`;
+}
+
+function viewPlaytests(view) {
+  const env = currentEnv();
+  if (!env?.universe_id) { view.append(notice("This environment has a configuration problem: see Setup.", true)); return; }
+  const setup = h("div", {}, h("p", { class: "loading", text: "Checking Claude Desktop…" }));
+  const list = h("div", {}, h("p", { class: "loading", text: "Loading the reports…" }));
+  const detail = h("div", { class: "stack" });
+  const head = h("div", { class: "section-head" }, h("h2", { text: "Simulated players" }),
+    h("div", { class: "row" },
+      h("button", { type: "button", class: "btn ghost small", onclick: pasteReport }, "Paste a report"),
+      h("button", { type: "button", class: "btn ghost small", onclick: showInstructions }, "Manual instructions")),
+    h("p", { text: "What Claude reports after simulating players in Roblox Studio through the Roblox MCP. Once robops is connected to Claude, each report appears here by itself." }));
+  const activity = h("section", { class: "stack", "aria-label": "Claude's actions in Studio" });
+  view.append(h("section", { class: "chart-section" }, head, setup, panel("Reports", null, list), detail), activity);
+  state.playtestsWatch = { stamp: null, list, detail, busy: false };
+  drawSetup(setup);
+  loadReports(list, detail);
+  drawActivity(activity);
+}
+
+/* Is Claude ready: robops' tool to save the reports, and Roblox Studio's MCP server. */
+function drawSetup(section, justInstalled = false) {
+  api("/api/claude/setup").then((s) => {
+    const label = { ok: "OK", busy: "To do", bad: "Error", idle: "How" };
+    const row = (level, ...content) => h("li", {},
+      h("span", { class: `lvl status ${level}`, text: label[level] }), h("div", { class: "msg" }, ...content));
+    const install = () => openModal({
+      title: "Add robops to Claude Desktop?",
+      build: (body) => body.append(
+        h("p", { text: "robops adds itself to Claude Desktop's MCP servers, for this project. Your other servers are kept and a copy of the current file is saved next to it (.robops-backup)." }),
+        h("ul", { class: "steps" }, s.configs.map((c) => h("li", { class: "code", text: c.path })))),
+      okLabel: "Add robops",
+      onSubmit: async () => { const r = await api("/api/claude/install", {}); drawSetup(section, true); return { message: "robops added to Claude Desktop." }; },
+    });
+    const rows = [];
+    if (!s.found) {
+      rows.push(row("bad", h("p", { text: "Claude Desktop was not found on this PC. Install it from claude.ai/download, open it once, then come back to this page." })));
+    } else if (s.installed) {
+      rows.push(row("ok", h("p", { text: "robops is set up in Claude Desktop for this project: Claude has the save_playtest_report tool." }),
+        justInstalled ? h("p", { class: "notice", text: s.restart }) : null));
+    } else {
+      const broken = s.configs.find((c) => c.error);
+      const other = s.configs.find((c) => c.robops && !c.robops.this_project);
+      const gone = s.configs.find((c) => c.robops && c.robops.this_project && !c.robops.command_found);
+      const text = broken ? broken.error
+        : gone ? `robops is set up in Claude Desktop, but the program it starts no longer exists (${gone.robops.command}).`
+        : other ? `robops is set up in Claude Desktop for another project (${other.robops.project}).`
+        : "robops is not set up in Claude Desktop yet: Claude can't save its reports here.";
+      rows.push(row(broken ? "bad" : "busy", h("p", { text }),
+        broken ? null : h("button", { type: "button", class: "btn env small", onclick: install }, other ? "Use this project instead" : "Add robops to Claude Desktop")));
+    }
+    rows.push(s.studio.length
+      ? row("ok", h("p", { text: `Roblox Studio's MCP server is set up in Claude Desktop (${s.studio.join(", ")}).` }))
+      : row("busy", h("p", { text: "Roblox Studio's MCP server is not in Claude Desktop's config." }), h("p", { class: "muted", text: s.studio_hint })));
+    rows.push(row("idle", h("p", { text: "In Claude Desktop, click + → robops → simulate_players, or ask Claude: \"Simulate 5 players on my game in Studio and save the report with robops\". The report appears below by itself." })));
+    const ready = s.installed && s.studio.length > 0;
+    put(section, h("details", { class: "panel setup", open: !ready || justInstalled },
+      h("summary", {}, h("h2", { text: "Connect Claude" }),
+        h("span", { class: `status ${ready ? "ok" : "busy"}`, text: ready ? "Ready" : "To do" })),
+      h("ul", { class: "findings" }, rows),
+      h("details", { class: "panel-body setup-more" }, h("summary", { class: "muted", text: "Claude Code or another app" }),
+        h("p", { text: "Claude Code (it does not read Claude Desktop's config):" }), h("pre", { class: "code-block", text: s.claude_code }),
+        h("p", { text: "Other apps that use the claude_desktop_config.json format:" }), h("pre", { class: "code-block", text: s.snippet }),
+        s.configs.length ? h("p", { class: "muted", text: `Claude Desktop's config: ${s.configs.map((c) => c.path).join(", ")}` }) : null)));
+  }).catch((err) => put(section, notice(err.message, true)));
+}
+
+/* Polled while the view is open: reloads the list when Claude saved a report through robops. */
+async function checkNewReports() {
+  const w = state.playtestsWatch;
+  if (!w || w.stamp === null || w.busy) return;
+  w.busy = true;
+  try {
+    const { stamp } = await api("/api/playtests/stamp");
+    if (stamp !== w.stamp && state.view === "playtests" && state.playtestsWatch === w) {
+      const more = parseInt(stamp, 10) > parseInt(w.stamp, 10);
+      w.stamp = stamp;
+      if (more) toast("New report from Claude.");
+      loadReports(w.list, w.detail, more ? null : undefined);
+    }
+  } catch { /* tried again on the next tick */ } finally { w.busy = false; }
+}
+
+function loadReports(list, detail, select) {
+  api(envPath("playtests")).then((r) => {
+    if (state.playtestsWatch?.list === list) state.playtestsWatch.stamp = r.stamp;
+    const rows = r.reports;
+    if (select === undefined) select = list.querySelector("tr[aria-selected=true]")?.dataset.key;
+    const source = `DataStore ${r.datastore} of universe ${r.universe_id}, and JSON files in playtests/ and .robops/playtests/`;
+    if (!rows.length) {
+      put(list, h("div", { class: "panel-body stack" },
+        r.remote_error ? notice(r.remote_error, true) : null,
+        h("p", { text: `No report yet (looked in: ${source}).` }),
+        h("ol", { class: "steps" },
+          h("li", { text: "Connect Claude above (once): robops gives Claude a tool to save its reports here." }),
+          h("li", { text: "Ask Claude to simulate players in Studio, for example: \"Simulate 5 new players doing the tutorial and save the report with robops.\"" }),
+          h("li", { text: "The report appears here by itself. Without robops in Claude, use Manual instructions or Paste a report." }))));
+      put(detail);
+      return;
+    }
+    let current = select || rows[0].key;
+    const body = h("tbody");
+    const open = (key) => {
+      current = key;
+      for (const tr of body.children) tr.setAttribute("aria-selected", String(tr.dataset.key === key));
+      put(detail, h("p", { class: "loading", text: "Opening the report…" }));
+      api(`${envPath("playtest")}?key=${encodeURIComponent(key)}`)
+        .then((rep) => put(detail, ...reportDetail(rep)))
+        .catch((err) => put(detail, notice(err.message, true)));
+    };
+    for (const rep of rows) {
+      const tr = h("tr", { class: "report-row", tabindex: "0", "data-key": rep.key, "aria-selected": "false",
+        onclick: () => open(rep.key), onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(rep.key); } } },
+        h("td", { title: when(rep.started_at || rep.saved_at), text: (rep.started_at || rep.saved_at) ? ago(rep.started_at || rep.saved_at) : "—" }),
+        h("td", {}, h("strong", { text: rep.title }), rep.place ? h("div", { class: "muted", text: rep.place }) : null,
+          rep.error ? h("div", { class: "error-text", text: rep.error }) : null),
+        h("td", { text: `${fmt(rep.counts.players)}: ${outcomeText(rep.counts.outcomes)}` }),
+        h("td", {}, rep.counts.findings?.high ? h("span", { class: "status bad", text: findingsText(rep.counts.findings) }) : findingsText(rep.counts.findings)),
+        h("td", { class: "muted", text: rep.source !== "file" ? "DataStore" : /^robops mcp/.test(rep.saved_by || "") ? "robops tool" : "File" }));
+      body.append(tr);
+    }
+    put(list, r.remote_error ? h("div", { class: "panel-body" }, notice(r.remote_error, true)) : null,
+      h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "When" }), h("th", { text: "Simulation" }), h("th", { text: "Players" }),
+        h("th", { text: "Problems found" }), h("th", { text: "Saved in" }))), body),
+      h("p", { class: "servers-legend", text: `Read from ${source}.` }));
+    open(rows.some((x) => x.key === current) ? current : rows[0].key);
+  }).catch((err) => put(list, h("div", { class: "panel-body" }, notice(err.message, true))));
+}
+
+function reportDetail(rep) {
+  const c = rep.counts;
+  const started = rep.started_at ? new Date(rep.started_at) : null, ended = rep.ended_at ? new Date(rep.ended_at) : null;
+  const length = started && ended && ended > started ? secondsText((ended - started) / 1000) : null;
+  const sub = [rep.place, started ? when(rep.started_at) : null, length ? `lasted ${length}` : null].filter(Boolean).join(", ");
+  const tiles = h("dl", { class: "stats" },
+    h("div", {}, h("dt", { text: "Players simulated" }), h("dd", { text: fmt(c.players) })),
+    ...Object.keys(OUTCOME).filter((k) => c.outcomes[k]).map((k) =>
+      h("div", {}, h("dt", { text: OUTCOME[k][1] }), h("dd", { text: fmt(c.outcomes[k]) }))),
+    h("div", {}, h("dt", { text: "Problems found" }), h("dd", { text: fmt(rep.findings.length) })));
+  const out = [panel(rep.title, sub || null,
+    !rep.recognized ? h("div", { class: "panel-body" }, notice("This entry does not follow the report format: it is shown as it is. Give Claude the instructions again.", true)) : null,
+    rep.summary ? h("div", { class: "panel-body" }, h("p", { text: rep.summary })) : null, tiles)];
+
+  if (rep.findings.length) {
+    out.push(panel("Problems found", "Sorted by severity.", h("ul", { class: "findings-list" }, rep.findings.map((f) => h("li", {},
+      h("span", { class: `status ${SEVERITY[f.severity][0]}`, text: SEVERITY[f.severity][1] }),
+      h("strong", { text: f.title }),
+      f.detail ? h("p", { text: f.detail }) : null,
+      (f.player || f.where) ? h("div", { class: "meta" }, f.player ? h("span", { text: `Seen by ${f.player}` }) : null,
+        f.where ? h("span", { class: "code", text: f.where }) : null) : null)))));
+  }
+  if (rep.players.length) {
+    out.push(panel("Players", "What each simulated player did and what they would say.",
+      h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Player" }), h("th", { text: "Outcome" }), h("th", { class: "right", text: "Time" }), h("th", { text: "Feedback" }))),
+        h("tbody", {}, rep.players.map((pl) => {
+          const [cls, label] = OUTCOME[pl.outcome] || OUTCOME.other;
+          return h("tr", {},
+            h("td", {}, h("strong", { text: pl.name }), pl.profile ? h("div", { class: "muted", text: pl.profile }) : null),
+            h("td", {}, h("span", { class: `status ${cls}`, text: pl.outcome === "other" && pl.outcome_text ? pl.outcome_text : label })),
+            h("td", { class: "right num", text: secondsText(pl.duration_s) }),
+            h("td", {}, pl.feedback ? h("p", { text: pl.feedback }) : null,
+              pl.issues.length ? h("ul", { class: "steps" }, pl.issues.map((t) => h("li", { text: t }))) : null,
+              pl.steps.length ? h("details", {}, h("summary", { text: `${pl.steps.length} step${pl.steps.length === 1 ? "" : "s"}` }),
+                h("ol", { class: "steps" }, pl.steps.map((st) => h("li", {},
+                  st.t !== null && st.t !== undefined ? h("span", { class: "t", text: typeof st.t === "number" ? `${st.t} s` : st.t }) : null,
+                  st.action, st.result ? h("span", { class: "muted", text: ` → ${st.result}` }) : null)))) : null));
+        })))));
+  }
+  const metrics = Object.entries(rep.metrics || {});
+  if (metrics.length) {
+    out.push(panel("Measures", null, h("div", { class: "panel-body" }, h("dl", { class: "kv" },
+      ...metrics.flatMap(([k, v]) => [h("dt", { class: "code", text: k }), h("dd", { class: "num", text: typeof v === "number" ? fmt(v) : v })])))));
+  }
+  return out;
+}
+
+function showInstructions() {
+  api(envPath("playtests/instructions")).then((r) => openModal({
+    title: "Instructions for Claude",
+    build: (body) => {
+      $("modal").classList.add("wide");
+      body.append(
+        h("p", { text: `Paste this in your conversation with Claude (the one using the Roblox MCP). Reports will go to the DataStore ${r.datastore} of the universe open in Studio.` }),
+        h("pre", { class: "code-block", text: r.text }));
+    },
+    okLabel: "Copy the instructions",
+    onSubmit: async () => {
+      $("modal").classList.remove("wide");
+      try { await navigator.clipboard.writeText(r.text); }
+      catch { throw new Error("The browser refused to copy: select the text and copy it by hand."); }
+      return { message: "Instructions copied: paste them in your conversation with Claude." };
+    },
+  })).catch((err) => toast(err.message, true));
+}
+
+function pasteReport() {
+  let editor;
+  openModal({
+    title: "Paste a report",
+    build: (body) => {
+      $("modal").classList.add("wide");
+      editor = jsonEditor({ value: "", label: "Report", rows: 14 });
+      body.append(h("p", { text: "When Claude can't save its report itself, ask it for the report as JSON and paste it here. It is saved in .robops/playtests/ of your project." }), editor.element);
+      setTimeout(() => editor.focus(), 0);
+    },
+    okLabel: "Save the report",
+    onSubmit: async () => {
+      if (editor.error) { editor.showError(); throw new Error(`Line ${editor.error.line}: ${editor.error.message}`); }
+      const r = await api("/api/playtests/import", { report: editor.parsed });
+      $("modal").classList.remove("wide");
+      if (state.view === "playtests") render();
+      return r;
+    },
+  });
+}
+
+function drawActivity(section) {
+  const body = h("div", {}, h("p", { class: "loading", text: "Reading Claude Desktop's log…" }));
+  put(section, panel("Claude's actions in Studio", "When Claude used Roblox Studio through the MCP, and whether Studio answered. Read from Claude Desktop's log on this PC.", body));
+  api("/api/claude/studio").then((a) => {
+    if (!a.sessions.length) {
+      put(body, h("div", { class: "panel-body stack" },
+        h("p", { text: a.files.length ? "Claude Desktop's log has no call to Roblox Studio yet." : "No Claude Desktop MCP log was found. Looked in:" }),
+        a.files.length ? null : h("ul", { class: "steps" }, a.checked.map((d) => h("li", { class: "code", text: d }))),
+        h("p", { class: "muted", text: "This works with Claude Desktop on this PC. If its logs are elsewhere, run robops dashboard --claude-logs <folder>." })));
+      return;
+    }
+    put(body, a.detailed ? null : h("div", { class: "panel-body" }, h("p", { class: "muted", text: "Recent versions of Claude Desktop only log when each call happened and whether it worked, not which Studio tool it was or its content. What the simulated players did is in the reports above." })),
+      ...a.sessions.map((s, i) => {
+      const tools = Object.entries(s.tools).map(([t, n]) => `${t} ×${n}`).join(", ");
+      const details = h("details", { class: "session", open: i === 0 },
+        h("summary", {}, h("strong", { text: when(s.start) }),
+          h("span", { class: "muted", text: `${fmt(s.count)} call${s.count === 1 ? "" : "s"}` }),
+          s.errors ? h("span", { class: "status bad", text: `${s.errors} error${s.errors === 1 ? "" : "s"}` }) : null,
+          h("span", { class: "muted code", text: tools })));
+      details.append(h("ol", { class: "session-calls" }, s.calls.map((c) => {
+        const args = Object.entries(c.arguments || {});
+        return h("li", { class: "call" },
+          h("div", { class: "call-head" },
+            h("span", { class: "muted num", text: new Date(c.time).toLocaleTimeString() }),
+            c.tool ? h("span", { class: "code", text: c.tool }) : h("span", { class: "muted", text: "Tool call" }),
+            c.is_error === null ? h("span", { class: "status idle", text: "No answer" })
+              : h("span", { class: `status ${c.is_error ? "bad" : "ok"}`, text: c.is_error ? "Error" : "OK" }),
+            typeof c.duration_ms === "number" ? h("span", { class: "muted", text: c.duration_ms < 1000 ? `${c.duration_ms} ms` : `${(c.duration_ms / 1000).toFixed(1)} s` }) : null),
+          ...args.map(([k, v]) => (String(v).includes("\n") || String(v).length > 80
+            ? h("details", {}, h("summary", { class: "muted", text: `${k} (${String(v).split("\n").length} lines)` }), h("pre", { class: "code-block", text: v }))
+            : h("div", { class: "muted" }, `${k}: `, h("span", { class: "code", text: v })))),
+          c.result !== null ? h("details", { open: !!c.is_error }, h("summary", { class: "muted", text: "Studio's answer" }), h("pre", { class: "code-block", text: c.result })) : null);
+      })));
+      return details;
+    }), h("p", { class: "servers-legend", text: `From ${a.files.join(", ")}.` }));
+  }).catch((err) => put(body, h("div", { class: "panel-body" }, notice(err.message, true))));
+}
+
 /* ----------------------------------------------------------------- setup */
 
 function viewSetup(view) {
@@ -985,7 +1261,9 @@ function viewSetup(view) {
 /* Live views refresh every 30 s, every 10 s while a deployment is running. */
 let lastRefresh = Date.now();
 async function refresh() {
-  if ($("modal").open || document.hidden || !["overview", "deployments"].includes(state.view)) return;
+  if ($("modal").open || document.hidden) return;
+  if (state.view === "playtests") { await checkNewReports(); return; }
+  if (!["overview", "deployments"].includes(state.view)) return;
   const busy = state.deployments?.runs?.some((r) => r.status !== "completed");
   if (!busy && Date.now() - lastRefresh < 29000) return;
   lastRefresh = Date.now();

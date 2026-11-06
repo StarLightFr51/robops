@@ -44,6 +44,9 @@ robops/
 │   ├── web/                    # the dashboard page (HTML, CSS, JS, bundled fonts)
 │   ├── github.py               # GitHub Actions runs, artifacts, workflow_dispatch
 │   ├── roblox_web.py           # public roblox.com stats (players, servers, users)
+│   ├── playtests.py            # simulated players: reports, Claude Desktop's MCP logs
+│   ├── mcp_server.py           # `robops mcp serve`: MCP server giving Claude save_playtest_report
+│   ├── claude_desktop.py       # Claude Desktop's config and logs, `robops mcp install`
 │   ├── checks.py               # configuration checks (robops check, dashboard)
 │   ├── client.py               # Open Cloud client (HTTP, retries, errors)
 │   ├── config.py               # reading robops.toml
@@ -248,6 +251,9 @@ robops ds snapshot --env production
 
 # Everything above, in a web page
 robops dashboard
+
+# Claude saves its player simulations for the dashboard (robops MCP server)
+robops mcp install
 ```
 
 Exit codes: `0` success, `1` Roblox/deployment failure, `2` configuration or usage error. An unexpected error prints a one-line message; `ROBOPS_DEBUG=1` shows the full Python traceback.
@@ -272,6 +278,7 @@ Run it from your game's folder (where `robops.toml` is): it opens a page in your
 | **Charts** | players online, public servers, new visits, favorites and likes over time (6 h to 30 days); new players per day, players by last visit, sessions per player and the distribution of **every numeric field of the players' Data** (coins, level, inventory size…) from a backup; deployment runs per week and their duration; size of each backup | pick the period and the backup |
 | **Deployments** | the latest runs of the *Roblox Deploy* workflow: target, status, branch and commit, author, duration (refreshed every 10 s while one is running) | launch a deployment (branch, version type, servers, DataStores) |
 | **Players and backups** | search by UserId or username: avatar, online/offline, profile data; local backups and the nightly GitHub backups | edit a player's data in a code editor (changed fields shown before saving), restore them from a backup, delete their profile, run a backup now |
+| **Simulated players** | the reports Claude saves after simulating players in Studio through the Roblox MCP (summary, problems found by severity, what each simulated player did and would say, measures), new ones appearing by themselves, whether Claude Desktop is connected, and when Claude used Studio | add robops to Claude Desktop, manual instructions, paste a report |
 | **DataStores** | every DataStore of the experience, its keys (prefix, scope), each value with its revision and metadata | create, edit or delete a key, take a snapshot |
 | **Setup** | the result of `robops check` for each environment, GitHub repository and token | — |
 
@@ -295,6 +302,25 @@ Every button opens a confirmation in the environment's colour (production in ora
 | `Ctrl+Z` / `Ctrl+Shift+Z` | undo / redo |
 
 *Revert* goes back to the value loaded from Roblox.
+
+**Simulated players (Claude + Roblox Studio MCP).** When Claude simulates players in Studio through the Roblox Studio MCP, its conclusions stay in the conversation. robops gives Claude its own MCP tool to save them in your project, where the *Simulated players* view shows them as soon as they arrive:
+
+1. **Connect Claude** (once), from your game folder: click **Add robops to Claude Desktop** in the *Simulated players* view, or run `robops mcp install`. robops adds itself to Claude Desktop's `claude_desktop_config.json` (your other servers are kept, the previous file is copied to `claude_desktop_config.json.robops-backup`). On Windows it writes where Claude Desktop really reads it, including the Microsoft Store/MSIX install (`%LOCALAPPDATA%\Packages\Claude_…\LocalCache\Roaming\Claude`).
+2. **Quit Claude Desktop completely** (tray icon → Quit) and open it again.
+3. Roblox Studio's MCP server must be in Claude Desktop too: in Studio, *Assistant → … → Manage MCP Servers → Enable Studio as MCP server*, then *Quick connect → Claude Desktop*. The view and `robops mcp status` tell you if it is missing.
+4. In Claude Desktop, pick **+ → robops → simulate_players** (the method to follow, with the number of players and what to test), or simply ask *"Simulate 5 new players doing the tutorial and save the report with robops"*. Claude calls `save_playtest_report` at the end: the report (format `robops-playtest/1`) is written to `.robops/playtests/` and appears in the dashboard by itself. Claude can also read earlier reports (`list_playtest_reports`, `get_playtest_report`) to check whether a problem is fixed.
+
+```bash
+robops mcp install      # add robops to Claude Desktop, for the project of robops.toml (--project to choose)
+robops mcp status       # is robops / Roblox Studio's MCP set up in Claude Desktop? how many reports?
+robops mcp uninstall
+# Claude Code (it does not read Claude Desktop's config): the dashboard shows the exact line, e.g.
+claude mcp add robops -- "C:\Users\me\AppData\Local\Programs\robops\robops.exe" mcp serve --project "C:\Games\MyGame"
+```
+
+Each report shows the summary, the problems found sorted by severity, each simulated player (profile, outcome, time, feedback, steps) and the measures. Without the robops tool (Claude elsewhere, another AI), **Manual instructions** gives a text to paste so that Claude saves its reports with Studio's `run_code` into the DataStore `RobopsPlaytests` of the universe (`[playtests] datastore = "…"` in `robops.toml`; needs *Enable Studio Access to API Services* in Studio, and `universe-datastores.objects` → *List* and *Read* on the API key), and **Paste a report** stores a report given as JSON. JSON files in a `playtests/` folder of the project are read too.
+
+Below the reports, *Claude's actions in Studio* shows when Claude used Studio, from Claude Desktop's MCP log on this PC (`%APPDATA%\Claude\logs` or the MSIX folder on Windows, `~/Library/Logs/Claude` on macOS; `--claude-logs <folder>` otherwise). Recent Claude Desktop versions only log a summary of each call (time, success or error), so the tool name, its code and Studio's answer appear only with older versions that logged the whole message; what the players did is in the reports.
 
 **Charts.** Roblox only gives *current* numbers, so the dashboard records the public stats (players, visits, favorites, votes, servers) every 5 minutes while it runs, in `.robops/stats/<environment>.jsonl` (`--sample-every 15` changes the pace, `0` turns it off; no API key needed). The line breaks where nothing was recorded rather than guessing. To keep a history while the dashboard is closed, schedule `robops stats record`, for example every 15 minutes with the Windows Task Scheduler:
 

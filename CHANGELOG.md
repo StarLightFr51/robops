@@ -3,6 +3,34 @@
 All notable changes to robops. Versions follow [semantic versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH`.
 
+## 1.7.0
+
+### Added
+- Dashboard **Simulated players** view, for what Claude does in Roblox Studio through the Roblox Studio MCP.
+  Each report shows the summary, problems found sorted by severity, each simulated player (profile, outcome,
+  time, feedback, steps) and measures.
+- **robops MCP server** (`robops mcp serve`), so that Claude saves its reports itself, with no instructions to
+  paste: tool `save_playtest_report` (written to `.robops/playtests/`), `list_playtest_reports` and
+  `get_playtest_report` to compare with earlier runs, and a `simulate_players` prompt (the method to follow)
+  in Claude Desktop's "+" menu. Plain JSON-RPC over stdio, no dependency; checked with the official MCP
+  TypeScript and Python SDK clients.
+- `robops mcp install` / `status` / `uninstall`, and an **Add robops to Claude Desktop** button: adds the
+  server to `claude_desktop_config.json` without touching the other servers (copy of the previous file in
+  `.robops-backup`; an invalid file is left alone). On Windows it also writes the file the MSIX/Microsoft Store
+  install really reads (`%LOCALAPPDATA%\Packages\Claude_…\LocalCache\Roaming\Claude`). Tells whether Roblox
+  Studio's MCP server is set up too, and gives the line for Claude Code.
+- New reports appear in the view by themselves (checked every 10 s, without calling Roblox).
+- **Manual instructions** (Luau code for Studio's `run_code` saving to the DataStore `RobopsPlaytests`,
+  `[playtests] datastore` in `robops.toml`) and **Paste a report**, for Claude without the robops tool.
+- **Claude's actions in Studio**: when Claude called Studio, how long it took and whether it failed, read from
+  Claude Desktop's MCP log (`--claude-logs` to point elsewhere). Reads the summarized lines of current Claude
+  Desktop versions (`method="tools/call" id=4`, `id=4 result(1 blocks)`, `error(code=…)`) as well as the full
+  JSON-RPC messages of older ones (with the tool, its code and Studio's answer), the MSIX log folder, and the
+  Studio server's name from Claude Desktop's config.
+
+### Fixed
+- Dashboard on phones: wide tables scroll inside their card, and words are no longer broken mid-way.
+
 ## 1.6.1
 
 ### Fixed
