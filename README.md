@@ -272,6 +272,7 @@ Run it from your game's folder (where `robops.toml` is): it opens a page in your
 | **Charts** | players online, public servers, new visits, favorites and likes over time (6 h to 30 days); new players per day, players by last visit, sessions per player and the distribution of **every numeric field of the players' Data** (coins, level, inventory size…) from a backup; deployment runs per week and their duration; size of each backup | pick the period and the backup |
 | **Deployments** | the latest runs of the *Roblox Deploy* workflow: target, status, branch and commit, author, duration (refreshed every 10 s while one is running) | launch a deployment (branch, version type, servers, DataStores) |
 | **Players and backups** | search by UserId or username: avatar, online/offline, profile data; local backups and the nightly GitHub backups | edit a player's data in a code editor (changed fields shown before saving), restore them from a backup, delete their profile, run a backup now |
+| **Simulated players** | the reports Claude writes after simulating players in Studio through the Roblox MCP (summary, problems found by severity, what each simulated player did and would say, measures), and every call Claude made to Studio with Studio's answer | copy the instructions to give Claude, paste a report |
 | **DataStores** | every DataStore of the experience, its keys (prefix, scope), each value with its revision and metadata | create, edit or delete a key, take a snapshot |
 | **Setup** | the result of `robops check` for each environment, GitHub repository and token | — |
 
@@ -295,6 +296,14 @@ Every button opens a confirmation in the environment's colour (production in ora
 | `Ctrl+Z` / `Ctrl+Shift+Z` | undo / redo |
 
 *Revert* goes back to the value loaded from Roblox.
+
+**Simulated players (Claude + Roblox Studio MCP).** When Claude simulates players in Studio through the Roblox Studio MCP, its conclusions stay in the conversation. To see them in the dashboard:
+
+1. Click **Instructions for Claude** in the *Simulated players* view and paste the text in your conversation with Claude (once).
+2. Ask for a simulation, e.g. *"Simulate 5 new players doing the tutorial and report"*. Claude then saves a report (format `robops-playtest/1`) with the MCP's `run_code` tool. It goes into the DataStore `RobopsPlaytests` of the universe open in Studio (`[playtests] datastore = "…"` in `robops.toml` to change it).
+3. Studio needs *Game Settings → Security → Enable Studio Access to API Services*, and the API key needs `universe-datastores.objects` → *List* and *Read*.
+
+If Claude can't save it, ask it for the report as JSON and use **Paste a report** (saved in `.robops/playtests/`; JSON files in a `playtests/` folder of the project are read too). Below the reports, *Claude's actions in Studio* lists every call Claude made to Studio (code run, play mode, console…) with Studio's answer. It reads Claude Desktop's MCP log on this PC (`%APPDATA%\Claude\logs` on Windows, `~/Library/Logs/Claude` on macOS; `--claude-logs <folder>` otherwise).
 
 **Charts.** Roblox only gives *current* numbers, so the dashboard records the public stats (players, visits, favorites, votes, servers) every 5 minutes while it runs, in `.robops/stats/<environment>.jsonl` (`--sample-every 15` changes the pace, `0` turns it off; no API key needed). The line breaks where nothing was recorded rather than guessing. To keep a history while the dashboard is closed, schedule `robops stats record`, for example every 15 minutes with the Windows Task Scheduler:
 

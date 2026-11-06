@@ -607,7 +607,8 @@ def cmd_dashboard(args) -> int:
                  "and the Deploy / Backup buttons need a token with Actions: Read and write.")
     app = dash.Dashboard(config_path, github_repo=repo, github_token=token,
                          deploy_workflow=args.deploy_workflow, backup_workflow=args.backup_workflow,
-                         sample_every=max(0.0, args.sample_every) * 60)
+                         sample_every=max(0.0, args.sample_every) * 60,
+                         claude_logs=Path(args.claude_logs) if args.claude_logs else None)
     dash.serve(app, port=args.port, open_browser=not args.no_browser)
     return EXIT_OK
 
@@ -894,6 +895,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="deploy workflow of the game repository (default: detected, e.g. roblox-deploy.yml)")
     p.add_argument("--backup-workflow", metavar="FILE.yml",
                    help="backup workflow of the game repository (default: detected, e.g. roblox-backup.yml)")
+    p.add_argument("--claude-logs", metavar="FOLDER",
+                   help="Claude Desktop's log folder, for Claude's actions in Studio (default: the usual place)")
     p.add_argument("--sample-every", type=float, default=5, metavar="MINUTES",
                    help="record the live stats for the Charts view every N minutes (default 5, 0 = off)")
     p.set_defaults(func=cmd_dashboard)

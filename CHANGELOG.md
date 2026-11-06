@@ -3,6 +3,24 @@
 All notable changes to robops. Versions follow [semantic versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH`.
 
+## 1.7.0
+
+### Added
+- Dashboard **Simulated players** view, for what Claude does in Roblox Studio through the Roblox Studio MCP:
+  - the reports Claude saves after simulating players (format `robops-playtest/1`, DataStore `RobopsPlaytests`
+    by default, `[playtests] datastore` in `robops.toml`). Each report shows the summary, problems found sorted
+    by severity, each simulated player (profile, outcome, time, feedback, steps) and measures;
+  - **Instructions for Claude**: the text to paste in the conversation so that Claude saves its reports
+    (Luau code for the MCP's `run_code` tool and the report format);
+  - **Paste a report** when Claude can't save it itself (stored in `.robops/playtests/`; JSON files in
+    `playtests/` are read too);
+  - **Claude's actions in Studio**: every MCP call Claude made to Studio (code, play mode, console…) with
+    Studio's answer and errors, grouped by session, read from Claude Desktop's MCP log
+    (`--claude-logs` to point elsewhere).
+
+### Fixed
+- Dashboard on phones: wide tables scroll inside their card, and words are no longer broken mid-way.
+
 ## 1.6.1
 
 ### Fixed
