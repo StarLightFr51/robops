@@ -32,10 +32,14 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-
-import requests
+from typing import TYPE_CHECKING
 
 from . import DEFAULT_REPOSITORY, __version__, _build_info
+
+if TYPE_CHECKING:
+    import requests
+else:
+    from ._lazy import requests  # imported on first use: faster startup
 
 GITHUB_API = "https://api.github.com"   # overridable via ROBOPS_GITHUB_API (GitHub Enterprise, tests)
 EXE_NAME = "robops.exe"
@@ -132,6 +136,8 @@ def is_newer(candidate: str, current: str) -> bool:
 
 def make_session(token: str | None = None) -> requests.Session:
     session = requests.Session()
+    # The dashboard calls GitHub from up to 16 threads: as many kept-alive connections.
+    session.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=16))
     session.headers.update({
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
