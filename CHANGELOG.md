@@ -3,6 +3,26 @@
 All notable changes to robops. Versions follow [semantic versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH`.
 
+## 1.7.1
+
+### Changed
+- Faster dashboard. Measured against the GitHub API and with Roblox's latency simulated:
+  - **Deployments**: a refresh takes about 0.8 s instead of 3.5 s, with 1 call to GitHub instead of 18, and
+    the first load takes 2.3 s instead of 4.9 s. The jobs of a finished run are asked only once, the workflow
+    list is kept 5 minutes (asked again at once if a workflow is missing), and the remaining calls are made at
+    the same time.
+  - **GitHub rate limit**: every GitHub read sends back the ETag of the last answer. When nothing changed, GitHub
+    answers 304, which is lighter and not counted in the 5,000 requests per hour of a token. Before, leaving the
+    dashboard open during a deployment could use the whole hourly quota.
+  - **Simulated players**: reopening the view takes 0.15 s instead of 0.9 s. The DataStore reports, written
+    once, are read once, instead of 40 reads of the DataStore budget the game's servers share.
+  - Connections to Roblox and GitHub stay open between two requests, so the secure connection is not set up
+    again each time.
+  - The page refreshes the game, the summary and the runs at the same time instead of one after the other.
+- `robops check --online` checks every place at the same time.
+- Commands start faster: the HTTP library is loaded only when a command uses the network (`--help`,
+  `--version`, `check`, `init`, `mcp …` no longer load it). From source: 85 ms instead of 150 ms.
+
 ## 1.7.0
 
 ### Added

@@ -1268,9 +1268,12 @@ async function refresh() {
   if (!busy && Date.now() - lastRefresh < 29000) return;
   lastRefresh = Date.now();
   try {
-    state.summary = await api("/api/summary");
-    if (state.view === "overview") await loadLive(true);
-    await loadDeployments(true);
+    const [summary] = await Promise.all([      // at the same time: the wait is the slowest one, not the sum
+      api("/api/summary"),
+      state.view === "overview" ? loadLive(true) : null,
+      loadDeployments(true),
+    ]);
+    state.summary = summary;
     if (["overview", "deployments"].includes(state.view)) render();
   } catch (err) { toast(err.message, true); }
 }
