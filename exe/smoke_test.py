@@ -90,6 +90,7 @@ def leftovers(folder: Path) -> list[Path]:
 
 
 def main() -> None:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")      # type: ignore[union-attr]  (cp1252 console)
     if os.name != "nt" or not os.environ.get("CI"):
         fail("Windows CI only: this test changes the current user's PATH and Apps & features.")
     dist = Path(sys.argv[1] if len(sys.argv) > 1 else "dist").resolve()
