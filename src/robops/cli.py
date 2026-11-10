@@ -567,7 +567,7 @@ def cmd_self_update(args) -> int:
         return EXIT_FAILURE
     if switch and layout == "folder":
         out.success(f"robops {release.version} is now installed as a folder in {exe.parent} "
-                    f"(robops.exe + {updater.CONTENTS_DIR}): it starts much faster.")
+                    "(robops.exe + its libraries folder): it starts much faster.")
     out.success(f"robops updated: {__version__} → {release.version}. Run the command again to use it."
                 if newer else f"robops {release.version} reinstalled.")
     return EXIT_OK

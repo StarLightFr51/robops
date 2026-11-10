@@ -95,7 +95,7 @@ Download `robops-setup.exe` from the *Releases* page and double-click it. The in
 
 - queries the repository and fetches the latest version (`robops-windows.zip`);
 - verifies its SHA-256 checksum before installing it;
-- installs it in `%LOCALAPPDATA%\Programs\robops` (no administrator rights): `robops.exe` and the `_internal` folder of its libraries. robops starts in about 0.3 s this way, against 1.2 s or more for a single .exe, which unpacks its libraries into a temporary folder at every launch;
+- installs it in `%LOCALAPPDATA%\Programs\robops` (no administrator rights): `robops.exe` and the folder of its libraries (`_internal-<version>`). robops starts in about 0.3 s this way, against 1.2 s or more for a single .exe, which unpacks its libraries into a temporary folder at every launch;
 - adds that folder to your Windows account's **PATH**, so `robops` works in any terminal;
 - registers it in **Apps & features** so it can be uninstalled.
 
@@ -108,7 +108,7 @@ Then open a **new** terminal and type `robops --version`. Running the installer 
 ### Updates
 
 - At most once a day, after a command, `robops.exe` checks whether a newer release exists and **tells you** (one line on stderr). Nothing is downloaded or replaced without you.
-- `robops self-update` installs it (checksum verified, the new version is used from the next launch); `robops self-update --check` only tells you whether there is one. It works even while robops runs elsewhere (dashboard, Claude Desktop): files in use are renamed `*.old` and deleted at a later launch.
+- `robops self-update` installs it (checksum verified, the new version is used from the next launch); `robops self-update --check` only tells you whether there is one. It works even while robops runs (dashboard, Claude Desktop): each version has its own libraries folder, so the new one is put next to the one in use, and the old one is deleted at a later launch, once no robops uses it.
 - **From robops 1.7 or older** (a single `robops.exe`): the first `robops self-update` installs 1.8 as a single file, a second `robops self-update` moves it to the folder. Or run `robops-setup.exe` again: it installs the folder straight away.
 - Prefer silent installation, as in versions before 1.3? Set the user environment variable `ROBOPS_AUTO_UPDATE=1`. Keep in mind that the checksum comes from the same release: it detects a corrupted download, not a compromised GitHub account.
 - A failed check (no network…) shows a warning but never makes your command fail.
@@ -124,7 +124,7 @@ GitHub calls then need a token. Create a *fine-grained token* with only **Conten
 
 ### Uninstalling
 
-*Settings → Apps → robops → Uninstall*, or `robops-setup.exe --uninstall` (add `--dir <folder>` if you installed it elsewhere). robops' own files (`robops.exe`, `_internal`, the installer), the PATH entry and the registry entry are removed; the folder itself is only deleted if nothing else is left in it.
+*Settings → Apps → robops → Uninstall*, or `robops-setup.exe --uninstall` (add `--dir <folder>` if you installed it elsewhere). robops' own files (`robops.exe`, its libraries folder, the installer), the PATH entry and the registry entry are removed; the folder itself is only deleted if nothing else is left in it.
 
 ### Compiling and installing on your PC, without GitHub
 
@@ -134,7 +134,7 @@ On a Windows PC with Python 3.11+ (installed from python.org, *Add python.exe to
 python exe\build.py --install
 ```
 
-The script installs PyInstaller if it is missing, compiles robops (2 to 4 minutes), copies `robops.exe` and its `_internal` folder to `%LOCALAPPDATA%\Programs\robops` and adds that folder to your PATH. Then open a **new** terminal: `robops --version`.
+The script installs PyInstaller if it is missing, compiles robops (2 to 4 minutes), copies `robops.exe` and its libraries folder to `%LOCALAPPDATA%\Programs\robops` and adds that folder to your PATH. Then open a **new** terminal: `robops --version`.
 
 To update, run the same command again after pulling the new code. The executables install and update themselves from the GitHub releases of `StarLightFr51/robops` (`DEFAULT_REPOSITORY` in `src/robops/__init__.py`); pass `--repo owner/name` to burn in another repository, or set `ROBOPS_REPO` at run time. Without `--install`, the files are simply produced in `dist/`. PyInstaller cannot produce a Windows .exe from Linux or macOS.
 

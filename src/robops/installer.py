@@ -5,7 +5,7 @@
   robops-setup.exe --uninstall   uninstalls (also launched from "Apps & features")
 
 Installs into %LOCALAPPDATA%\\Programs\\robops (no administrator rights needed):
-robops.exe and the _internal folder of its libraries, which makes it start in
+robops.exe and the folder of its libraries (_internal-<version>), which makes it start in
 about 0.3 s instead of unpacking a single .exe at every launch. Adds that folder
 to the user's PATH and registers robops in "Apps & features".
 """
@@ -69,7 +69,7 @@ def install(install_dir: Path, *, force: bool = False, session: requests.Session
         _say("  SHA-256 checksum verified")
         updater.cleanup_old(exe)
         updater.cleanup_folder(install_dir)
-        what = f"{updater.EXE_NAME} + {updater.CONTENTS_DIR}" if layout == "folder" else updater.EXE_NAME
+        what = f"{updater.EXE_NAME} + its libraries folder" if layout == "folder" else updater.EXE_NAME
         _say(f"✔ robops {release.version} installed ({what})")
 
     # Copy of the installer next to the tool: used for uninstalling.
@@ -105,8 +105,8 @@ def install_local(source: Path, install_dir: Path, *, setup_exe: Path | None = N
     install_dir.mkdir(parents=True, exist_ok=True)
     target = install_dir / updater.EXE_NAME
     if source.is_dir():
-        if not (source / updater.EXE_NAME).is_file() or not (source / updater.CONTENTS_DIR).is_dir():
-            raise OSError(f"{source} does not contain {updater.EXE_NAME} and {updater.CONTENTS_DIR}")
+        if not (source / updater.EXE_NAME).is_file() or len(updater.contents_dirs(source)) != 1:
+            raise OSError(f"{source} does not contain {updater.EXE_NAME} and one {updater.CONTENTS_DIR} folder")
         with tempfile.TemporaryDirectory(prefix=".robops-update-", dir=install_dir) as tmp:
             staged = Path(tmp) / "new"
             shutil.copytree(source, staged)
@@ -131,7 +131,8 @@ def _installed_files(install_dir: Path) -> list[Path]:
     found = [install_dir / name for name in names]
     for name in names:
         found += install_dir.glob(name + ".old*")               # left behind by an update
-    found += [install_dir / updater.CONTENTS_DIR, install_dir / updater.CLEANUP_MARKER]   # folder install
+    found += install_dir.glob(updater.CONTENTS_DIR + "*")        # libraries folders (_internal-<version>)
+    found.append(install_dir / updater.CLEANUP_MARKER)
     found += install_dir.glob(".robops-new.exe")                # exe/build.py --install
     found += install_dir.glob(".download-*")                    # interrupted install (robops ≤ 1.7)
     found += install_dir.glob(".robops-update-*")               # interrupted update

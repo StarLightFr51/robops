@@ -1,7 +1,7 @@
 """Installing and updating robops from the repository's GitHub Releases.
 
 Each release published by .github/workflows/release.yml contains:
-  - robops-windows.zip the tool as a folder: robops.exe + _internal\\ (its libraries).
+  - robops-windows.zip the tool as a folder: robops.exe + _internal-<version>\\ (its libraries).
                        Installed in %LOCALAPPDATA%\\Programs\\robops, it starts in about
                        0.3 s, against 1.2 s or more for a single .exe, which unpacks
                        its libraries into a temporary folder at every launch.
@@ -11,10 +11,13 @@ Each release published by .github/workflows/release.yml contains:
   - robops-setup.exe   the installer
   - SHA256SUMS.txt     the SHA-256 checksums of these files
 
-Replacing the files of a running robops relies on the fact that Windows allows
-*renaming* a running .exe or a loaded library (but not overwriting or deleting
-it): each old file becomes <name>.old, the new one takes its place, and the old
-ones are deleted on a later launch, once no robops uses them any more.
+Updating while robops runs (dashboard, Claude Desktop's MCP server): Windows
+does not let a file in use be overwritten, and a running robops even keeps its
+libraries archive open, so it cannot be renamed. Each version therefore has its
+own libraries folder (_internal-<version>): the new one is moved in next to the
+one still in use, robops.exe is renamed robops.exe.old (allowed while it runs)
+and the new one takes its place. The old folder is deleted at a later launch,
+once no robops uses it any more.
 
 Automatic check: at most once a day, robops *tells* the user that a new version
 exists; `robops self-update` installs it. Silent installation (the downloaded
@@ -39,6 +42,7 @@ import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -282,9 +286,19 @@ def cleanup_old(target: Path) -> None:
 
 # ------------------------------------------------------ folder install
 
+def contents_dir_name(version: str) -> str:
+    """The libraries folder of a version, given to PyInstaller (--contents-directory)."""
+    return f"{CONTENTS_DIR}-{version}"
+
+
+def contents_dirs(folder: Path) -> list[Path]:
+    """The libraries folders in folder: _internal-<version> (and _internal)."""
+    return sorted(p for p in folder.glob(CONTENTS_DIR + "*") if p.is_dir() and not p.name.endswith(".deleting"))
+
+
 def folder_layout(install_dir: Path) -> bool:
-    """True if robops is installed there as a folder (robops.exe + _internal)."""
-    return (install_dir / CONTENTS_DIR).is_dir()
+    """True if robops is installed there as a folder (robops.exe + its libraries folder)."""
+    return bool(contents_dirs(install_dir))
 
 
 def can_switch_to_folder(release: Release) -> bool:
@@ -304,8 +318,8 @@ def extract_release_zip(archive: Path, dest: Path) -> None:
             zf.extractall(dest)
     except zipfile.BadZipFile as exc:
         raise UpdateError(f"{ZIP_NAME} is not a valid zip ({exc}): update cancelled.") from exc
-    if not (dest / EXE_NAME).is_file() or not (dest / CONTENTS_DIR).is_dir():
-        raise UpdateError(f"{ZIP_NAME} does not contain {EXE_NAME} and {CONTENTS_DIR}: update cancelled.")
+    if not (dest / EXE_NAME).is_file() or len(contents_dirs(dest)) != 1:
+        raise UpdateError(f"{ZIP_NAME} does not contain {EXE_NAME} and one {CONTENTS_DIR} folder: update cancelled.")
     if os.name != "nt":
         os.chmod(dest / EXE_NAME, 0o755)     # zip does not keep the "executable" permission
 
@@ -314,17 +328,15 @@ def _is_backup(path: Path) -> bool:
     return bool(_BACKUP_RE.search(path.name))
 
 
-def _owned_files(install_dir: Path) -> list[Path]:
-    """The files of the installed version: robops.exe and its libraries (not the user's files)."""
-    files = [install_dir / EXE_NAME] if (install_dir / EXE_NAME).is_file() else []
-    contents = install_dir / CONTENTS_DIR
-    if contents.is_dir():
-        files += [p for p in contents.rglob("*") if p.is_file() and not _is_backup(p)]
-    return files
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.stat().st_size == b.stat().st_size and sha256_file(a) == sha256_file(b)
+    except OSError:
+        return False
 
 
 def _set_aside(target: Path) -> Path:
-    """Renames a file to <name>.old (allowed even while it is in use)."""
+    """Renames a file to <name>.old (allowed for a running .exe)."""
     backup = target.with_name(target.name + ".old")
     if backup.exists():
         try:
@@ -336,59 +348,85 @@ def _set_aside(target: Path) -> Path:
 
 
 def swap_in(new_root: Path, install_dir: Path) -> None:
-    """Puts the files of new_root in install_dir, even while robops runs from there.
+    """Puts robops.exe and its libraries folder from new_root into install_dir, even while robops runs there.
 
-    Every file replaced or no longer used is renamed <name>.old (Windows allows
-    renaming a running .exe or a loaded library, not overwriting it), then the
-    new file is moved in: a rename on the same disk, so the switch is quick.
-    robops.exe comes last. On error, everything is put back as it was.
+    A new version's libraries folder (_internal-<version>) is moved in whole, next to the one that
+    running robops processes still use. robops.exe is renamed robops.exe.old (Windows allows it for a
+    running program) and the new one moved in. Reinstalling the same version only replaces the files
+    that differ. On error, everything is put back as it was.
     """
-    new_files = sorted((p.relative_to(new_root) for p in new_root.rglob("*") if p.is_file()),
-                       key=lambda rel: (rel == Path(EXE_NAME), str(rel)))
-    keep = set(new_files)
-    gone = [p for p in _owned_files(install_dir) if p.relative_to(install_dir) not in keep]
-    set_aside: list[tuple[Path, Path]] = []
-    placed: list[Path] = []
+    [new_dir] = contents_dirs(new_root)
+    target_dir = install_dir / new_dir.name
+    undo: list[Callable[[], object]] = []
     try:
-        for target in gone:
-            set_aside.append((target, _set_aside(target)))
-        for rel in new_files:
-            target = install_dir / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                set_aside.append((target, _set_aside(target)))
-            os.replace(new_root / rel, target)
-            placed.append(target)
+        if not target_dir.exists():
+            os.replace(new_dir, target_dir)            # one rename for the whole folder
+            undo.append(partial(os.replace, target_dir, new_dir))
+        else:
+            for src in sorted(p for p in new_dir.rglob("*") if p.is_file()):
+                dst = target_dir / src.relative_to(new_dir)
+                if dst.is_file() and _same_file(src, dst):
+                    continue                           # unchanged: never touch a file robops may be using
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if dst.exists():
+                    backup = _set_aside(dst)
+                    undo.append(partial(os.replace, backup, dst))
+                os.replace(src, dst)
+                undo.append(partial(os.unlink, dst))
+        exe, new_exe = install_dir / EXE_NAME, new_root / EXE_NAME
+        if not (exe.is_file() and _same_file(new_exe, exe)):
+            if exe.exists():
+                backup = _set_aside(exe)
+                undo.append(partial(os.replace, backup, exe))
+            os.replace(new_exe, exe)
+            undo.append(partial(os.unlink, exe))
     except OSError:
-        for target in reversed(placed):
+        for step in reversed(undo):
             try:
-                target.unlink()
-            except OSError:
-                pass
-        for target, backup in reversed(set_aside):
-            try:
-                backup.replace(target)
+                step()
             except OSError:
                 pass
         raise
-    if set_aside:
-        try:
-            (install_dir / CLEANUP_MARKER).touch()
+    others = [d for d in contents_dirs(install_dir) if d != target_dir]
+    if others or any(_is_backup(p) for p in install_dir.glob(EXE_NAME + ".old*")) \
+            or any(_is_backup(p) for p in target_dir.rglob("*.old*")):
+        try:   # tells a later launch which libraries folder robops.exe uses: the rest can go
+            (install_dir / CLEANUP_MARKER).write_text(target_dir.name, encoding="utf-8")
         except OSError:
             pass
 
 
 def cleanup_folder(install_dir: Path) -> None:
-    """Deletes the old files of a previous update, once no robops uses them (cheap when nothing to do)."""
+    """Deletes the libraries folders of previous versions once no robops uses them (cheap when nothing to do)."""
     marker = install_dir / CLEANUP_MARKER
     if not marker.exists():
         return
+    try:
+        keep = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if not keep or not (install_dir / keep).is_dir():
+        return                                     # unknown: delete nothing
+    running = Path(getattr(sys, "_MEIPASS", "")).name if is_frozen() else ""
     remaining = False
-    for path in (install_dir / CONTENTS_DIR).rglob("*.old*"):
+    for folder in contents_dirs(install_dir):
+        if folder.name in (keep, running):
+            continue
+        trash = folder.with_name(folder.name + ".deleting")
+        try:
+            folder.rename(trash)                   # refused while a running robops uses it
+        except OSError:
+            remaining = True
+            continue
+        shutil.rmtree(trash, ignore_errors=True)
+    for trash in install_dir.glob(CONTENTS_DIR + "*.deleting"):    # an interrupted deletion
+        shutil.rmtree(trash, ignore_errors=True)
+        remaining = remaining or trash.exists()
+    for path in (install_dir / keep).rglob("*.old*"):              # same-version reinstall
         if path.is_file() and _is_backup(path):
             try:
                 path.unlink()
-            except OSError:          # still loaded by a robops that is running
+            except OSError:
                 remaining = True
     if not remaining:
         try:

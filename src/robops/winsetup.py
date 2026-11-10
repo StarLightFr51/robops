@@ -97,7 +97,8 @@ def register_uninstall(install_dir: Path, version: str, setup_exe: Path, reg: An
     winreg = _winreg(reg)
     exe = install_dir / "robops.exe"
     files = [f for f in install_dir.glob("*.exe") if f.is_file()]
-    files += [f for f in (install_dir / "_internal").rglob("*") if f.is_file()]     # folder install
+    for libraries in install_dir.glob("_internal*"):                                # folder install
+        files += [f for f in libraries.rglob("*") if f.is_file()]
     size_kb = sum(f.stat().st_size for f in files) // 1024
     values = {
         "DisplayName": (winreg.REG_SZ, "robops"),

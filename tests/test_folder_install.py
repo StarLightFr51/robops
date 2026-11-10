@@ -4,6 +4,7 @@ import hashlib
 import io
 import os
 import zipfile
+from pathlib import Path
 
 import pytest
 from test_installer import FakeWinreg
@@ -21,8 +22,8 @@ def make_zip(files: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-NEW_FOLDER = {"robops.exe": b"MZ-folder-new", "_internal/python312.dll": b"dll-new",
-              "_internal/robops/web/app.js": b"js-new", "_internal/base_library.zip": b"lib-new"}
+NEW_FOLDER = {"robops.exe": b"MZ-folder-new", "_internal-9.0.0/python312.dll": b"dll-new",
+              "_internal-9.0.0/robops/web/app.js": b"js-new", "_internal-9.0.0/base_library.zip": b"lib-new"}
 
 
 class ZipGitHub(FakeGitHub):
@@ -49,7 +50,7 @@ def tree(root):
 
 # ------------------------------------------------------------------ unpacking
 
-@pytest.mark.parametrize("bad", ["../evil.dll", "/abs.dll", "C:/x.dll", "_internal/../../evil.dll",
+@pytest.mark.parametrize("bad", ["../evil.dll", "/abs.dll", "C:/x.dll", "_internal-9.0.0/../../evil.dll",
                                  "..\\evil.dll"])
 def test_zip_paths_cannot_leave_the_folder(tmp_path, bad):
     archive = tmp_path / "r.zip"
@@ -71,25 +72,39 @@ def test_zip_must_hold_the_tool(tmp_path):
 
 # ------------------------------------------------------------------- swapping
 
-OLD = {"robops.exe": b"MZ-old", "_internal/python312.dll": b"dll-old", "_internal/robops/web/app.js": b"js-old",
-       "_internal/gone.pyd": b"gone", "robops-setup.exe": b"setup", "notes.txt": b"mine"}
+OLD = {"robops.exe": b"MZ-old", "_internal-1.0.0/python312.dll": b"dll-old",
+       "_internal-1.0.0/base_library.zip": b"lib-old", "robops-setup.exe": b"setup", "notes.txt": b"mine"}
 
 
-def test_swap_sets_old_files_aside_then_cleans_them(tmp_path):
+def test_a_new_version_goes_next_to_the_one_in_use(tmp_path):
     install, new = tmp_path / "install", tmp_path / "new"
     write_tree(install, OLD)
     write_tree(new, NEW_FOLDER)
     updater.swap_in(new, install)
     after = tree(install)
     assert {k: after[k] for k in NEW_FOLDER} == NEW_FOLDER
+    assert after["_internal-1.0.0/base_library.zip"] == b"lib-old"      # untouched: robops 1.0 may be running
+    assert after["robops.exe.old"] == b"MZ-old"
     assert after["robops-setup.exe"] == b"setup" and after["notes.txt"] == b"mine"     # not ours: untouched
-    assert after["robops.exe.old"] == b"MZ-old" and after["_internal/python312.dll.old"] == b"dll-old"
-    assert after["_internal/gone.pyd.old"] == b"gone" and "_internal/gone.pyd" not in after
-    assert (install / updater.CLEANUP_MARKER).exists()
+    assert after[updater.CLEANUP_MARKER] == b"_internal-9.0.0"
 
-    updater.cleanup_folder(install)
+    updater.cleanup_folder(install)                                     # a later launch
     updater.cleanup_old(install / "robops.exe")
     assert sorted(tree(install)) == sorted([*NEW_FOLDER, "robops-setup.exe", "notes.txt"])
+
+
+def test_same_version_only_replaces_what_differs(tmp_path, monkeypatch):
+    install, new = tmp_path / "install", tmp_path / "new"
+    write_tree(install, {**NEW_FOLDER, "_internal-9.0.0/python312.dll": b"damaged"})
+    write_tree(new, NEW_FOLDER)
+    moved = []
+    real_replace = os.replace
+    monkeypatch.setattr(updater.os, "replace", lambda a, b: (moved.append(Path(b).name), real_replace(a, b)))
+    updater.swap_in(new, install)
+    assert moved == ["python312.dll.old", "python312.dll"]             # base_library.zip, robops.exe: identical
+    assert tree(install)["_internal-9.0.0/python312.dll"] == b"dll-new"
+    updater.cleanup_folder(install)
+    assert sorted(tree(install)) == sorted(NEW_FOLDER)
 
 
 def test_swap_puts_everything_back_on_error(tmp_path, monkeypatch):
@@ -97,39 +112,46 @@ def test_swap_puts_everything_back_on_error(tmp_path, monkeypatch):
     write_tree(install, OLD)
     write_tree(new, NEW_FOLDER)
     before = tree(install)
-    real_replace, moved = os.replace, []
+    real_replace = os.replace
 
-    def flaky(src, dst):
-        if str(src).startswith(str(new)):
-            moved.append(dst)
-            if len(moved) == 3:
-                raise PermissionError("in use")
+    def exe_locked(src, dst):
+        if Path(dst).name == "robops.exe" and str(src).startswith(str(new)):
+            raise PermissionError("in use")
         return real_replace(src, dst)
 
-    monkeypatch.setattr(updater.os, "replace", flaky)
+    monkeypatch.setattr(updater.os, "replace", exe_locked)
     with pytest.raises(PermissionError):
         updater.swap_in(new, install)
-    assert tree(install) == before                       # as it was, no .old left
+    assert tree(install) == before                                     # new folder moved back out, exe restored
+    assert not (install / updater.CLEANUP_MARKER).exists()
 
 
-def test_old_files_still_in_use_are_deleted_later(tmp_path, monkeypatch):
+def test_folders_in_use_are_deleted_later(tmp_path, monkeypatch):
     install = tmp_path / "install"
-    write_tree(install, {"robops.exe": b"MZ", "_internal/a.dll": b"a", "_internal/a.dll.old": b"old",
-                         "_internal/b.pyd.old-123": b"old", updater.CLEANUP_MARKER: b""})
-    real_unlink = type(install).unlink
+    write_tree(install, {**NEW_FOLDER, "_internal-1.0.0/base_library.zip": b"old", "_internal-0.9.0/x.pyd": b"old",
+                         updater.CLEANUP_MARKER: b"_internal-9.0.0"})
+    real_rename = type(install).rename
 
-    def busy(self, *args, **kwargs):
-        if self.name == "a.dll.old":
-            raise PermissionError("loaded by a running robops")
-        return real_unlink(self, *args, **kwargs)
+    def busy(self, target):
+        if self.name == "_internal-1.0.0":
+            raise PermissionError("a running robops 1.0 uses it")
+        return real_rename(self, target)
 
-    monkeypatch.setattr(type(install), "unlink", busy)
+    monkeypatch.setattr(type(install), "rename", busy)
     updater.cleanup_folder(install)
-    assert sorted(tree(install)) == [updater.CLEANUP_MARKER, "_internal/a.dll", "_internal/a.dll.old", "robops.exe"]
-    monkeypatch.setattr(type(install), "unlink", real_unlink)
-    updater.cleanup_folder(install)                       # next launch
-    assert sorted(tree(install)) == ["_internal/a.dll", "robops.exe"]
-    updater.cleanup_folder(install)                       # nothing to do: no marker, no walk
+    assert (install / "_internal-1.0.0").is_dir() and not (install / "_internal-0.9.0").exists()
+    assert (install / updater.CLEANUP_MARKER).exists()                # try again next time
+    monkeypatch.setattr(type(install), "rename", real_rename)
+    updater.cleanup_folder(install)                                   # robops 1.0 has stopped
+    assert sorted(tree(install)) == sorted(NEW_FOLDER)
+    updater.cleanup_folder(install)                                   # nothing to do: no marker, no walk
+
+
+def test_cleanup_deletes_nothing_without_knowing_the_folder_to_keep(tmp_path):
+    write_tree(tmp_path, {"robops.exe": b"MZ", "_internal-1.0.0/a": b"a", "_internal-2.0.0/b": b"b",
+                          updater.CLEANUP_MARKER: b""})
+    updater.cleanup_folder(tmp_path)
+    assert len(updater.contents_dirs(tmp_path)) == 2
 
 
 # ------------------------------------------------------------------- releases
@@ -166,7 +188,7 @@ def test_self_update_moves_a_single_file_to_the_folder(single_file, monkeypatch,
     assert cli.main(["self-update"]) == 0
     out = capsys.readouterr().out
     assert "now installed as a folder" in out and "reinstalled" in out
-    assert (single_file.parent / "_internal" / "python312.dll").read_bytes() == b"dll-new"
+    assert (single_file.parent / "_internal-9.0.0" / "python312.dll").read_bytes() == b"dll-new"
     assert single_file.read_bytes() == b"MZ-folder-new"
     updater.cleanup_after_update()                                # next launch
     assert not list(single_file.parent.rglob("*.old*")) and not (single_file.parent / updater.CLEANUP_MARKER).exists()
@@ -216,7 +238,7 @@ def test_installer_installs_the_folder_and_uninstall_removes_it(setup_env, monke
     versions = iter([None, "2.3.0"])
     monkeypatch.setattr(winsetup, "installed_version", lambda exe: next(versions))
     assert installer.install(setup_env, session=ZipGitHub(tag="v2.3.0"), reg=reg) == 0
-    assert "robops.exe + _internal" in capsys.readouterr().out
+    assert "robops.exe + its libraries folder" in capsys.readouterr().out
     assert tree(setup_env) == {**NEW_FOLDER, "robops-setup.exe": b"MZ-setup"}
     assert reg.path()[0] == rf"C:\Tools;{setup_env}"
 
@@ -227,7 +249,7 @@ def test_installer_installs_the_folder_and_uninstall_removes_it(setup_env, monke
 
     (setup_env / "notes.txt").write_text("mine", encoding="utf-8")
     assert installer.uninstall(setup_env, reg=reg) == 0
-    assert sorted(p.name for p in setup_env.iterdir()) == ["notes.txt"]       # _internal gone, user file kept
+    assert sorted(p.name for p in setup_env.iterdir()) == ["notes.txt"]       # libraries gone, user file kept
     assert reg.path()[0] == r"C:\Tools"
 
 
@@ -237,7 +259,7 @@ def test_installer_moves_a_single_file_install_to_the_folder(setup_env, monkeypa
     monkeypatch.setattr(winsetup, "installed_version", lambda exe: "2.3.0")
     assert installer.install(setup_env, session=ZipGitHub(tag="v2.3.0"), reg=FakeWinreg("")) == 0
     assert "Installing 2.3.0" in capsys.readouterr().out
-    assert (setup_env / "_internal" / "python312.dll").is_file()
+    assert (setup_env / "_internal-9.0.0" / "python312.dll").is_file()
 
 
 def test_install_local_folder_build(tmp_path):
@@ -254,7 +276,7 @@ def test_install_local_folder_build(tmp_path):
 
 def test_apps_and_features_size_counts_the_libraries(tmp_path):
     write_tree(tmp_path, {"robops.exe": b"x" * 1024, "robops-setup.exe": b"x" * 1024,
-                          "_internal/python312.dll": b"x" * 4096, "notes.txt": b"x" * 9000})
+                          "_internal-1.8.0/python312.dll": b"x" * 4096, "notes.txt": b"x" * 9000})
     reg = FakeWinreg("")
     winsetup.register_uninstall(tmp_path, "1.8.0", tmp_path / "robops-setup.exe", reg)
     assert reg.keys[("HKCU", winsetup.UNINSTALL_KEY)]["EstimatedSize"][0] == 6       # KB, not the user's file

@@ -5,7 +5,7 @@ On your PC, from the robops folder (Python 3.11+ required):
     python exe/build.py --install
 
   → compiles robops, copies it to %LOCALAPPDATA%\\Programs\\robops (robops.exe and
-    the _internal folder of its libraries) and adds that folder to your PATH.
+    the folder of its libraries, _internal-<version>) and adds that folder to your PATH.
     Then open a new terminal: `robops --version`.
 
 The executables install and update themselves from the GitHub releases of
@@ -14,7 +14,7 @@ in another repository.
 
 PyInstaller cannot produce a Windows .exe from Linux or macOS.
 Result in dist/:
-  folder/robops/       robops.exe + _internal (what is installed: starts in ~0.3 s)
+  folder/robops/       robops.exe + _internal-<version> (what is installed: starts in ~0.3 s)
   robops-windows.zip   that folder, published in the releases
   robops.exe           the same tool as a single file, for robops ≤ 1.7 updating themselves
   robops-setup.exe     the installer
@@ -33,9 +33,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_INFO = ROOT / "src" / "robops" / "_build_info.py"
+INIT = ROOT / "src" / "robops" / "__init__.py"
 
 sys.path.insert(0, str(ROOT / "src"))
-from robops import DEFAULT_REPOSITORY  # noqa: E402  (robops/__init__.py has no dependencies)
+from robops import DEFAULT_REPOSITORY, __version__  # noqa: E402  (robops/__init__.py has no dependencies)
 
 
 def sha256(path: Path) -> str:
@@ -49,12 +50,12 @@ def pip(*args: str) -> None:
 
 def pyinstaller(mode: str, name: str, *args: str) -> None:
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", f"--{mode}", "--console",
-                    "--name", name, "--workpath", f"build/{name}-{mode}", "--specpath", f"build/{name}-{mode}",
-                    *args], cwd=ROOT, check=True)
+                    "--name", name, "--workpath", str(ROOT / "build" / f"{name}-{mode}"),
+                    "--specpath", str(ROOT / "build" / f"{name}-{mode}"), *args], cwd=ROOT, check=True)
 
 
 def zip_folder(folder: Path, archive: Path) -> None:
-    """robops-windows.zip: robops.exe and _internal at the root, in a stable order."""
+    """robops-windows.zip: robops.exe and _internal-<version> at the root, in a stable order."""
     archive.unlink(missing_ok=True)
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for path in sorted(p for p in folder.rglob("*") if p.is_file()):
@@ -67,7 +68,9 @@ def main() -> int:
                         help=f"GitHub repository of the releases (owner/name) burned into the executables "
                              f"(default: {DEFAULT_REPOSITORY})")
     parser.add_argument("--install", action="store_true",
-                        help="install robops.exe on this PC and add it to the PATH (Windows)")
+                        help="install robops on this PC and add it to the PATH (Windows)")
+    parser.add_argument("--dist", type=Path, default=ROOT / "dist", help="output folder (default: dist)")
+    parser.add_argument("--version", help="build as this version instead of __version__ (tests of the update)")
     args = parser.parse_args()
     if "/" not in args.repo:
         parser.error("--repo must be of the form owner/name")
@@ -84,21 +87,30 @@ def main() -> int:
         pip("pyinstaller==6.*")
     pip(str(ROOT))
 
-    # 1. Burn in the repository, then reinstall the package so PyInstaller sees this code.
-    original = BUILD_INFO.read_text(encoding="utf-8")
+    # 1. Burn in the repository (and the version, for tests), then reinstall the package so PyInstaller
+    #    sees this code.
+    version = args.version or __version__
+    dist = args.dist.resolve()
+    originals = {path: path.read_text(encoding="utf-8") for path in (BUILD_INFO, INIT)}
     BUILD_INFO.write_text(f'REPOSITORY = "{args.repo}"\n', encoding="utf-8")
+    if args.version:
+        INIT.write_text(originals[INIT].replace(f'__version__ = "{__version__}"', f'__version__ = "{version}"'),
+                        encoding="utf-8")
     try:
         pip("--no-deps", "--force-reinstall", str(ROOT))
         # 2. Compile: robops as a folder (installed), as a single file (older updaters), and the setup.
-        print("Compiling robops and robops-setup.exe (2 to 4 minutes)…", flush=True)
-        pyinstaller("onedir", "robops", "--contents-directory", "_internal", "--collect-data", "robops",
-                    "--distpath", "dist/folder", "exe/entry_cli.py")
-        pyinstaller("onefile", "robops", "--collect-data", "robops", "--distpath", "dist", "exe/entry_cli.py")
-        pyinstaller("onefile", "robops-setup", "--distpath", "dist", "exe/entry_setup.py")
+        print(f"Compiling robops {version} and robops-setup.exe (2 to 4 minutes)…", flush=True)
+        # One libraries folder per version: an update moves the new one in next to the one in use.
+        pyinstaller("onedir", "robops", "--contents-directory", f"_internal-{version}", "--collect-data", "robops",
+                    "--distpath", str(dist / "folder"), "exe/entry_cli.py")
+        pyinstaller("onefile", "robops", "--collect-data", "robops", "--distpath", str(dist), "exe/entry_cli.py")
+        pyinstaller("onefile", "robops-setup", "--distpath", str(dist), "exe/entry_setup.py")
     finally:
-        BUILD_INFO.write_text(original, encoding="utf-8")
+        for path, text in originals.items():
+            path.write_text(text, encoding="utf-8")
+        if args.version:
+            pip("--no-deps", "--force-reinstall", str(ROOT))     # back to the real version
 
-    dist = ROOT / "dist"
     zip_folder(dist / "folder" / "robops", dist / "robops-windows.zip")
 
     # 3. SHA-256 checksums (verified by the installer and the automatic update).
@@ -113,14 +125,13 @@ def main() -> int:
     if args.install:
         import importlib
         importlib.invalidate_caches()   # the package was just installed by pip
-        from robops import __version__
         from robops.installer import install_local
         from robops.winsetup import default_install_dir
 
         install_dir = default_install_dir()
         path_changed = install_local(dist / "folder" / "robops", install_dir,
-                                     setup_exe=dist / "robops-setup.exe", version=__version__)
-        print(f"\n✔ robops {__version__} installed in {install_dir} (robops.exe + _internal)")
+                                     setup_exe=dist / "robops-setup.exe", version=version)
+        print(f"\n✔ robops {version} installed in {install_dir} (robops.exe + _internal-{version})")
         if path_changed:
             print("✔ Folder added to your PATH")
         print("Open a NEW terminal then type:  robops --version")

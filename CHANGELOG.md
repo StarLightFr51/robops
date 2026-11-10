@@ -6,7 +6,7 @@ All notable changes to robops. Versions follow [semantic versioning](https://sem
 ## 1.8.0
 
 ### Changed
-- **robops is installed as a folder**: `robops.exe` plus the `_internal` folder of its libraries, in
+- **robops is installed as a folder**: `robops.exe` plus the folder of its libraries (`_internal-<version>`), in
   `%LOCALAPPDATA%\Programs\robops`, which `robops-setup.exe` still adds to the PATH. Every command starts about
   4 times faster on Windows: 0.27 s instead of 1.23 s for `robops --version` (median, GitHub's Windows machine).
   A single .exe unpacked its libraries into a temporary folder at every launch.
@@ -14,22 +14,29 @@ All notable changes to robops. Versions follow [semantic versioning](https://sem
   robops 1.7 and older can still update themselves.
 - `robops self-update` and the installer install the folder and also move a single-file install to it (even at
   the same version). The daily check suggests it.
-- Updating works while robops runs from the same folder (dashboard, Claude Desktop's MCP server). Each file in
-  use is renamed `*.old`, the new one is moved in, and everything is put back if a step fails. Old files are
-  deleted at a later launch, once nothing uses them.
-- The zip is checked before anything is replaced: SHA-256, no path leaving the folder, `robops.exe` and
-  `_internal` present.
-- Uninstalling also removes `_internal`. Apps & features shows the real size.
+- Updating works while robops runs from the same folder (dashboard, Claude Desktop's MCP server):
+  - A running robops keeps its libraries archive open, so its files can't be replaced or even renamed. Each
+    version therefore has its own libraries folder: the new one is moved in next to the one in use, and
+    `robops.exe` is renamed `robops.exe.old`.
+  - Reinstalling the same version only replaces the files that differ.
+  - Everything is put back if a step fails.
+  - The old folder is deleted at a later launch, once nothing uses it.
+- The zip is checked before anything is replaced: SHA-256, no path leaving the folder, `robops.exe` and one
+  libraries folder present.
+- Uninstalling also removes the libraries folders. Apps & features shows the real size.
 
 ### Added
-- `exe/smoke_test.py`, run by the release before publishing and by the new *Windows executables* workflow
-  whenever the install or update code changes. On a real Windows machine, with the files just built served as
-  a fake release, it checks:
+- `exe/smoke_test.py`, run on a real Windows machine with the files just built served as a fake release. It
+  checks:
   - an install with `robops-setup.exe`;
   - the move of a 1.7-style single `robops.exe` to the folder;
-  - an update while a robops is running, which keeps answering;
-  - the cleanup at the next launch;
+  - an update to the next version while a robops runs from the folder: it keeps answering, its libraries
+    folder survives the next launches, and is deleted once it stops;
   - an uninstall.
+
+  The release runs it before publishing. The new *Windows executables* workflow runs it, with a second build as
+  the next version, whenever the install or update code changes.
+- `exe/build.py --dist <folder> --version <version>`, to build a test version.
 
 ## 1.7.1
 

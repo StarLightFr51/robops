@@ -5,15 +5,18 @@ in a temporary folder whose name contains a space:
   1. robops-setup.exe installs robops as a folder (robops.exe + _internal);
   2. a single-file robops.exe, as installed by robops <= 1.7, moves to the folder
      with `robops self-update`;
-  3. an update while another robops (the MCP server) runs from the same folder:
-     it succeeds, the running robops keeps answering, and the old files are
-     deleted at the next launch;
+  3. an update to the next version while another robops (the MCP server) runs
+     from the same folder: it succeeds, the running robops keeps answering, its
+     libraries folder is kept while it runs and deleted at a launch after it stopped;
   4. robops-setup.exe --uninstall removes what robops created;
 and prints how long `robops --version` takes as a single file and as a folder.
 
 It writes to the current user's registry (PATH, Apps & features): CI only.
 
-    python exe/smoke_test.py dist
+    python exe/build.py && python exe/build.py --dist dist-next --version <version>.1
+    python exe/smoke_test.py dist dist-next
+
+Without dist-next, step 3 reinstalls the same version while robops runs.
 """
 
 from __future__ import annotations
@@ -43,36 +46,61 @@ def ok(message: str) -> None:
     print(f"✔ {message}", flush=True)
 
 
-def serve_release(dist: Path, version: str) -> str:
-    files = {name: dist / name for name in ("robops.exe", "robops-setup.exe", "robops-windows.zip", "SHA256SUMS.txt")}
-    for path in files.values():
-        if not path.is_file():
-            fail(f"{path} is missing: run exe/build.py first")
+class Releases:
+    """A fake GitHub API on 127.0.0.1 serving one dist/ folder as the latest release."""
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802 — http.server's name
-            base = f"http://127.0.0.1:{self.server.server_address[1]}"
-            if self.path == f"/repos/{REPO}/releases/latest":
-                body = json.dumps({"tag_name": f"v{version}", "html_url": "",
-                                   "assets": [{"name": n, "url": f"{base}/assets/{n}"} for n in files]}).encode()
-                kind = "application/json"
-            elif self.path.startswith("/assets/") and self.path[8:] in files:
-                body, kind = files[self.path[8:]].read_bytes(), "application/octet-stream"
-            else:
-                self.send_error(404)
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", kind)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+    def __init__(self) -> None:
+        self.dist: Path | None = None
+        self.version = ""
+        releases = self
 
-        def log_message(self, *args: object) -> None:
-            pass
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 — http.server's name
+                base = f"http://127.0.0.1:{self.server.server_address[1]}"
+                files = releases.files()
+                if self.path == f"/repos/{REPO}/releases/latest":
+                    body = json.dumps({"tag_name": f"v{releases.version}", "html_url": "",
+                                       "assets": [{"name": n, "url": f"{base}/assets/{n}"} for n in files]}).encode()
+                    kind = "application/json"
+                elif self.path.startswith("/assets/") and self.path[8:] in files:
+                    body, kind = files[self.path[8:]].read_bytes(), "application/octet-stream"
+                else:
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return f"http://127.0.0.1:{server.server_address[1]}"
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def files(self) -> dict[str, Path]:
+        assert self.dist is not None
+        return self.files_of(self.dist)
+
+    def publish(self, dist: Path) -> str:
+        for path in [*self.files_of(dist).values(), dist / "folder" / "robops" / "robops.exe"]:
+            if not path.is_file():
+                fail(f"{path} is missing: run exe/build.py first")
+        self.dist = dist
+        self.version = version_of(dist / "folder" / "robops" / "robops.exe")
+        return self.version
+
+    @staticmethod
+    def files_of(dist: Path) -> dict[str, Path]:
+        return {n: dist / n for n in ("robops.exe", "robops-setup.exe", "robops-windows.zip", "SHA256SUMS.txt")}
+
+
+def version_of(exe: Path) -> str:
+    done = subprocess.run([str(exe), "--version"], capture_output=True, text=True,
+                          env={**os.environ, "ROBOPS_NO_UPDATE": "1"})
+    return done.stdout.split()[-1]
 
 
 def run(env: dict, *args: object, expect: int = 0) -> str:
@@ -86,7 +114,7 @@ def run(env: dict, *args: object, expect: int = 0) -> str:
 
 
 def leftovers(folder: Path) -> list[Path]:
-    return [p for p in folder.rglob("*") if ".old" in p.name]
+    return [p for p in folder.rglob("*") if ".old" in p.name or p.name.endswith(".deleting")]
 
 
 def main() -> None:
@@ -94,21 +122,21 @@ def main() -> None:
     if os.name != "nt" or not os.environ.get("CI"):
         fail("Windows CI only: this test changes the current user's PATH and Apps & features.")
     dist = Path(sys.argv[1] if len(sys.argv) > 1 else "dist").resolve()
-    folder_exe = dist / "folder" / "robops" / "robops.exe"
-    version = subprocess.run([folder_exe, "--version"], capture_output=True, text=True,
-                             env={**os.environ, "ROBOPS_NO_UPDATE": "1"}).stdout.split()[-1]
-    base = serve_release(dist, version)
+    dist_next = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None
+    releases = Releases()
+    version = releases.publish(dist)
     root = Path(tempfile.mkdtemp(prefix="robops smoke "))
-    env = {**os.environ, "ROBOPS_GITHUB_API": base, "ROBOPS_REPO": REPO, "ROBOPS_NO_UPDATE": "1",
+    env = {**os.environ, "ROBOPS_GITHUB_API": releases.url, "ROBOPS_REPO": REPO, "ROBOPS_NO_UPDATE": "1",
            "ROBOPS_STATE_DIR": str(root / "state")}
     env.pop("GH_TOKEN", None)
+    libraries = f"_internal-{version}"
 
     # 1. Installer.
     install = root / "Programs" / "robops"
     print(run(env, dist / "robops-setup.exe", "--dir", install, "--quiet"))
     exe = install / "robops.exe"
-    if not exe.is_file() or not (install / "_internal").is_dir():
-        fail(f"the installer did not put robops.exe and _internal in {install}")
+    if not exe.is_file() or not (install / libraries).is_dir():
+        fail(f"the installer did not put robops.exe and {libraries} in {install}")
     if version not in run(env, exe, "--version"):
         fail("the installed robops does not give the expected version")
     ok(f"robops-setup.exe installed robops {version} as a folder")
@@ -120,8 +148,8 @@ def main() -> None:
     legacy.mkdir()
     shutil.copy2(dist / "robops.exe", legacy / "robops.exe")
     print(run(env, legacy / "robops.exe", "self-update"))
-    if not (legacy / "_internal").is_dir():
-        fail("self-update of a single-file robops did not create _internal")
+    if not (legacy / libraries).is_dir():
+        fail(f"self-update of a single-file robops did not create {libraries}")
     run(env, legacy / "robops.exe", "--version")                 # this launch deletes robops.exe.old
     if leftovers(legacy):
         fail(f"old files left after the move: {leftovers(legacy)}")
@@ -144,21 +172,36 @@ def main() -> None:
             fail("the running robops stopped answering")
             raise
 
+    def still_works(step: int) -> None:
+        reply = ask({"jsonrpc": "2.0", "id": step, "method": "tools/call", "params": {
+            "name": "save_playtest_report",
+            "arguments": {"title": f"Smoke {step}", "summary": "ok",
+                          "players": [{"name": "Sim_1", "outcome": "completed", "feedback": "ok"}]}}})
+        if reply.get("result", {}).get("isError") or "Report saved" not in json.dumps(reply):
+            fail(f"the running robops does not work any more: {reply}")
+
     ask({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
-    print(run(env, exe, "self-update", "--force"))
-    if not leftovers(install / "_internal"):
-        fail("expected the replaced files of the running robops to be set aside as .old")
-    reply = ask({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-        "name": "save_playtest_report",
-        "arguments": {"title": "Smoke", "summary": "ok", "players": [{"name": "Sim_1", "outcome": "completed", "feedback": "ok"}]}}})
-    if reply.get("result", {}).get("isError") or "Report saved" not in json.dumps(reply):
-        fail(f"the running robops did not work after the update: {reply}")
+    if dist_next:
+        new_version = releases.publish(dist_next)
+        print(run(env, exe, "self-update"))
+        if version_of(exe) != new_version:
+            fail(f"robops.exe is not {new_version} after the update")
+        if not (install / libraries).is_dir() or not (install / f"_internal-{new_version}").is_dir():
+            fail("expected both libraries folders while the old robops runs")
+        run(env, exe, "--version")                                # must not delete the folder in use
+        if not (install / libraries).is_dir():
+            fail("a launch deleted the libraries folder of a robops that is still running")
+        still_works(1)
+        ok(f"updated {version} → {new_version} while robops {version} was running; it kept working")
+    else:
+        print(run(env, exe, "self-update", "--force"))
+        still_works(1)
+        ok("reinstalled while robops was running; it kept working")
     server.stdin.close()                                          # type: ignore[union-attr]
     server.wait(timeout=30)
-    ok("updated while robops was running; the running robops kept working")
-    run(env, exe, "--version")
-    if leftovers(install):
-        fail(f"old files not deleted at the next launch: {leftovers(install)}")
+    run(env, exe, "--version")                                    # nothing uses the old files any more
+    if leftovers(install) or (dist_next and (install / libraries).exists()):
+        fail(f"old files not deleted after robops stopped: {sorted(p.name for p in install.iterdir())}")
     ok("old files deleted at the next launch")
 
     # 4. Uninstall.
