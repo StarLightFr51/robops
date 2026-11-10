@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  Compiling and publishing robops.exe / robops-setup.exe
+#  Compiling and publishing robops (robops-windows.zip, robops.exe) and robops-setup.exe
 #
 #  Simple method (button):
 #    Actions tab → "Release" → Run workflow → branch main → Run workflow.
@@ -89,16 +89,21 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
-          ./dist/robops.exe --version | tee version.txt
-          grep -q "${TAG#v}" version.txt
+          for exe in ./dist/folder/robops/robops.exe ./dist/robops.exe; do
+            "$exe" --version | tee version.txt
+            grep -q "${TAG#v}" version.txt
+          done
           mkdir smoke && cd smoke
-          ../dist/robops.exe init
+          ../dist/folder/robops/robops.exe init
           test -f robops.toml && test -f .github/workflows/roblox-deploy.yml
-          ../dist/robops.exe check || true        # the template requires IDs: we only check that it runs
+          ../dist/folder/robops/robops.exe check || true        # the template requires IDs: we only check that it runs
           ../dist/robops-setup.exe --help
           cd .. && cat dist/SHA256SUMS.txt
 
-      # Verifiable with:  gh attestation verify robops.exe --repo <owner>/robops
+      - name: Install, update and uninstall for real
+        run: python exe/smoke_test.py dist
+
+      # Verifiable with:  gh attestation verify robops-windows.zip --repo <owner>/robops
       # (proves the .exe was built by this workflow from this repository).
       # Free for public repositories; private ones need GitHub Enterprise Cloud.
       - name: Attest build provenance
@@ -106,6 +111,7 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
+            dist/robops-windows.zip
             dist/robops.exe
             dist/robops-setup.exe
 
@@ -116,7 +122,7 @@ jobs:
         run: |
           # With the button, the tag does not exist yet: gh creates it on this commit.
           gh release create "$TAG" \
-            dist/robops.exe dist/robops-setup.exe dist/SHA256SUMS.txt \
+            dist/robops-windows.zip dist/robops.exe dist/robops-setup.exe dist/SHA256SUMS.txt \
             --target "$GITHUB_SHA" \
             --title "robops $TAG" \
             --generate-notes

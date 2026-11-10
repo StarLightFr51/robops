@@ -1,0 +1,38 @@
+# Builds the Windows executables and checks installing, updating (also while robops
+# runs) and uninstalling them for real, whenever that code changes.
+name: Windows executables
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "exe/**"
+      - "src/robops/updater.py"
+      - "src/robops/installer.py"
+      - "src/robops/winsetup.py"
+      - "src/robops/_lazy.py"
+      - ".github/workflows/exe.yml"
+  pull_request:
+    paths:
+      - "exe/**"
+      - "src/robops/updater.py"
+      - "src/robops/installer.py"
+      - "src/robops/winsetup.py"
+      - "src/robops/_lazy.py"
+      - ".github/workflows/exe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check . "pyinstaller==6.*"
+      - run: python exe/build.py
+      - run: python exe/smoke_test.py dist

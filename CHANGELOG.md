@@ -3,6 +3,34 @@
 All notable changes to robops. Versions follow [semantic versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH`.
 
+## 1.8.0
+
+### Changed
+- **robops is installed as a folder**: `robops.exe` plus the `_internal` folder of its libraries, in
+  `%LOCALAPPDATA%\Programs\robops`, which `robops-setup.exe` still adds to the PATH. Every command starts about
+  4 times faster on Windows: 0.27 s instead of 1.23 s for `robops --version` (median, GitHub's Windows machine).
+  A single .exe unpacked its libraries into a temporary folder at every launch.
+- Releases publish `robops-windows.zip` (the folder). `robops.exe` (single file) stays published, so that
+  robops 1.7 and older can still update themselves.
+- `robops self-update` and the installer install the folder and also move a single-file install to it (even at
+  the same version). The daily check suggests it.
+- Updating works while robops runs from the same folder (dashboard, Claude Desktop's MCP server). Each file in
+  use is renamed `*.old`, the new one is moved in, and everything is put back if a step fails. Old files are
+  deleted at a later launch, once nothing uses them.
+- The zip is checked before anything is replaced: SHA-256, no path leaving the folder, `robops.exe` and
+  `_internal` present.
+- Uninstalling also removes `_internal`. Apps & features shows the real size.
+
+### Added
+- `exe/smoke_test.py`, run by the release before publishing and by the new *Windows executables* workflow
+  whenever the install or update code changes. On a real Windows machine, with the files just built served as
+  a fake release, it checks:
+  - an install with `robops-setup.exe`;
+  - the move of a 1.7-style single `robops.exe` to the folder;
+  - an update while a robops is running, which keeps answering;
+  - the cleanup at the next launch;
+  - an uninstall.
+
 ## 1.7.1
 
 ### Changed

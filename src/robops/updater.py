@@ -1,21 +1,27 @@
-"""Updating robops.exe from the repository's GitHub Releases.
+"""Installing and updating robops from the repository's GitHub Releases.
 
 Each release published by .github/workflows/release.yml contains:
-  - robops.exe         the tool
+  - robops-windows.zip the tool as a folder: robops.exe + _internal\\ (its libraries).
+                       Installed in %LOCALAPPDATA%\\Programs\\robops, it starts in about
+                       0.3 s, against 1.2 s or more for a single .exe, which unpacks
+                       its libraries into a temporary folder at every launch.
+  - robops.exe         the same tool as a single file (for robops 1.7 and older,
+                       whose update downloads it; they move to the folder on their
+                       next `robops self-update`)
   - robops-setup.exe   the installer
-  - SHA256SUMS.txt     the SHA-256 checksums of both files
+  - SHA256SUMS.txt     the SHA-256 checksums of these files
 
-Replacing the running executable relies on the fact that Windows allows
-*renaming* a running .exe (but not overwriting it): the old one becomes
-robops.exe.old, the new one takes its place, and the old one is deleted on
-the next launch.
+Replacing the files of a running robops relies on the fact that Windows allows
+*renaming* a running .exe or a loaded library (but not overwriting or deleting
+it): each old file becomes <name>.old, the new one takes its place, and the old
+ones are deleted on a later launch, once no robops uses them any more.
 
 Automatic check: at most once a day, robops *tells* the user that a new version
 exists; `robops self-update` installs it. Silent installation (the downloaded
-executable replaces the current one without asking) is opt-in with
+files replace the current ones without asking) is opt-in with
 ROBOPS_AUTO_UPDATE=1: the SHA-256 checksums come from the same release, so they
 detect a corrupted download but not a compromised GitHub account. Releases also
-carry a build provenance attestation: `gh attestation verify robops.exe --repo <owner>/robops`.
+carry a build provenance attestation: `gh attestation verify robops-windows.zip --repo <owner>/robops`.
 
 Private repository: set ROBOPS_GITHUB_TOKEN (a token with read access to the repository).
 """
@@ -25,13 +31,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from . import DEFAULT_REPOSITORY, __version__, _build_info
@@ -43,8 +51,12 @@ else:
 
 GITHUB_API = "https://api.github.com"   # overridable via ROBOPS_GITHUB_API (GitHub Enterprise, tests)
 EXE_NAME = "robops.exe"
+ZIP_NAME = "robops-windows.zip"     # robops.exe + _internal\ (the libraries)
+CONTENTS_DIR = "_internal"          # PyInstaller --contents-directory
 SETUP_NAME = "robops-setup.exe"
 CHECKSUMS_NAME = "SHA256SUMS.txt"
+CLEANUP_MARKER = ".robops-cleanup"  # old files are waiting to be deleted
+_BACKUP_RE = re.compile(r"\.old(-\d+)?$")
 CHECK_INTERVAL = 24 * 3600          # at most one automatic check per day
 
 
@@ -268,11 +280,147 @@ def cleanup_old(target: Path) -> None:
             pass
 
 
-def update_executable(release: Release, target: Path, *, session: requests.Session) -> None:
-    # Download into the same folder: the final move is instantaneous.
-    with tempfile.TemporaryDirectory(prefix=".robops-update-", dir=target.parent) as tmp:
+# ------------------------------------------------------ folder install
+
+def folder_layout(install_dir: Path) -> bool:
+    """True if robops is installed there as a folder (robops.exe + _internal)."""
+    return (install_dir / CONTENTS_DIR).is_dir()
+
+
+def can_switch_to_folder(release: Release) -> bool:
+    """A single-file robops.exe that can move to the faster folder install."""
+    return is_frozen() and ZIP_NAME in release.assets and not folder_layout(current_executable().parent)
+
+
+def extract_release_zip(archive: Path, dest: Path) -> None:
+    """Unpacks robops-windows.zip, refusing any path that would land outside dest."""
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            for info in zf.infolist():
+                name = info.filename.replace("\\", "/")
+                parts = PurePosixPath(name).parts
+                if name.startswith("/") or ".." in parts or (parts and ":" in parts[0]):
+                    raise UpdateError(f"{ZIP_NAME} contains an unsafe path ({info.filename}): update cancelled.")
+            zf.extractall(dest)
+    except zipfile.BadZipFile as exc:
+        raise UpdateError(f"{ZIP_NAME} is not a valid zip ({exc}): update cancelled.") from exc
+    if not (dest / EXE_NAME).is_file() or not (dest / CONTENTS_DIR).is_dir():
+        raise UpdateError(f"{ZIP_NAME} does not contain {EXE_NAME} and {CONTENTS_DIR}: update cancelled.")
+    if os.name != "nt":
+        os.chmod(dest / EXE_NAME, 0o755)     # zip does not keep the "executable" permission
+
+
+def _is_backup(path: Path) -> bool:
+    return bool(_BACKUP_RE.search(path.name))
+
+
+def _owned_files(install_dir: Path) -> list[Path]:
+    """The files of the installed version: robops.exe and its libraries (not the user's files)."""
+    files = [install_dir / EXE_NAME] if (install_dir / EXE_NAME).is_file() else []
+    contents = install_dir / CONTENTS_DIR
+    if contents.is_dir():
+        files += [p for p in contents.rglob("*") if p.is_file() and not _is_backup(p)]
+    return files
+
+
+def _set_aside(target: Path) -> Path:
+    """Renames a file to <name>.old (allowed even while it is in use)."""
+    backup = target.with_name(target.name + ".old")
+    if backup.exists():
+        try:
+            backup.unlink()
+        except OSError:               # an older robops still uses it: another name
+            backup = target.with_name(f"{target.name}.old-{time.time_ns()}")
+    target.replace(backup)
+    return backup
+
+
+def swap_in(new_root: Path, install_dir: Path) -> None:
+    """Puts the files of new_root in install_dir, even while robops runs from there.
+
+    Every file replaced or no longer used is renamed <name>.old (Windows allows
+    renaming a running .exe or a loaded library, not overwriting it), then the
+    new file is moved in: a rename on the same disk, so the switch is quick.
+    robops.exe comes last. On error, everything is put back as it was.
+    """
+    new_files = sorted((p.relative_to(new_root) for p in new_root.rglob("*") if p.is_file()),
+                       key=lambda rel: (rel == Path(EXE_NAME), str(rel)))
+    keep = set(new_files)
+    gone = [p for p in _owned_files(install_dir) if p.relative_to(install_dir) not in keep]
+    set_aside: list[tuple[Path, Path]] = []
+    placed: list[Path] = []
+    try:
+        for target in gone:
+            set_aside.append((target, _set_aside(target)))
+        for rel in new_files:
+            target = install_dir / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                set_aside.append((target, _set_aside(target)))
+            os.replace(new_root / rel, target)
+            placed.append(target)
+    except OSError:
+        for target in reversed(placed):
+            try:
+                target.unlink()
+            except OSError:
+                pass
+        for target, backup in reversed(set_aside):
+            try:
+                backup.replace(target)
+            except OSError:
+                pass
+        raise
+    if set_aside:
+        try:
+            (install_dir / CLEANUP_MARKER).touch()
+        except OSError:
+            pass
+
+
+def cleanup_folder(install_dir: Path) -> None:
+    """Deletes the old files of a previous update, once no robops uses them (cheap when nothing to do)."""
+    marker = install_dir / CLEANUP_MARKER
+    if not marker.exists():
+        return
+    remaining = False
+    for path in (install_dir / CONTENTS_DIR).rglob("*.old*"):
+        if path.is_file() and _is_backup(path):
+            try:
+                path.unlink()
+            except OSError:          # still loaded by a robops that is running
+                remaining = True
+    if not remaining:
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+
+
+def install_release(release: Release, install_dir: Path, *, session: requests.Session) -> str:
+    """Installs the release's robops in install_dir, even while robops runs from there.
+
+    As a folder (robops.exe + _internal) when the release has robops-windows.zip, which
+    also moves a single-file install to the folder; otherwise the single robops.exe of
+    older releases. Returns "folder" or "file".
+    """
+    install_dir.mkdir(parents=True, exist_ok=True)
+    # Download and unpack into the same folder: moving the files in is then instantaneous.
+    with tempfile.TemporaryDirectory(prefix=".robops-update-", dir=install_dir) as tmp:
+        if ZIP_NAME in release.assets:
+            archive = fetch_verified(release, ZIP_NAME, Path(tmp) / "download", session=session)
+            unpacked = Path(tmp) / "new"
+            extract_release_zip(archive, unpacked)
+            swap_in(unpacked, install_dir)
+            return "folder"
         new_file = fetch_verified(release, EXE_NAME, Path(tmp), session=session)
-        replace_executable(new_file, target)
+        replace_executable(new_file, install_dir / EXE_NAME)
+        return "file"
+
+
+def update_executable(release: Release, target: Path, *, session: requests.Session) -> str:
+    """Updates the robops whose executable is target (see install_release)."""
+    return install_release(release, target.parent, session=session)
 
 
 # --------------------------------------------------- automatic update
@@ -294,7 +442,9 @@ def auto_install_enabled() -> bool:
 
 def cleanup_after_update() -> None:
     if is_frozen():
-        cleanup_old(current_executable())
+        exe = current_executable()
+        cleanup_old(exe)
+        cleanup_folder(exe.parent)
 
 
 def maybe_auto_update(
@@ -322,11 +472,13 @@ def maybe_auto_update(
     try:
         session = session or make_session(github_token())
         release = latest_release(repository(), session=session, timeout=5)
-        if not is_newer(release.version, __version__):
+        newer = is_newer(release.version, __version__)
+        if not newer and not can_switch_to_folder(release):
             return None
         if not install:
             notify(f"ℹ robops {release.version} is available (installed: {__version__}). "
-                   "Install it with:  robops self-update")
+                   "Install it with:  robops self-update" if newer else
+                   "ℹ robops can start 4 times faster as a folder install. Switch with:  robops self-update")
             return None
         update_executable(release, current_executable(), session=session)
     except (UpdateError, OSError, requests.RequestException) as exc:
