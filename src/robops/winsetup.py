@@ -96,7 +96,10 @@ def broadcast_environment_change() -> None:
 def register_uninstall(install_dir: Path, version: str, setup_exe: Path, reg: Any = None) -> None:
     winreg = _winreg(reg)
     exe = install_dir / "robops.exe"
-    size_kb = sum(f.stat().st_size for f in install_dir.glob("*.exe") if f.is_file()) // 1024
+    files = [f for f in install_dir.glob("*.exe") if f.is_file()]
+    for libraries in install_dir.glob("_internal*"):                                # folder install
+        files += [f for f in libraries.rglob("*") if f.is_file()]
+    size_kb = sum(f.stat().st_size for f in files) // 1024
     values = {
         "DisplayName": (winreg.REG_SZ, "robops"),
         "DisplayVersion": (winreg.REG_SZ, version),

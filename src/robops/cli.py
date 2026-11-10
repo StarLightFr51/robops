@@ -542,22 +542,34 @@ def cmd_self_update(args) -> int:
         return EXIT_OK
     repo = updater.repository()
     session = updater.make_session(updater.github_token())
+    exe = updater.current_executable()
     try:
         release = updater.latest_release(repo, session=session)
         updater.record_check()
-        if not updater.is_newer(release.version, __version__) and not args.force:
+        newer = updater.is_newer(release.version, __version__)
+        switch = updater.can_switch_to_folder(release)
+        if not newer and not switch and not args.force:
             out.success(f"robops {__version__} is up to date (latest version: {release.version}).")
             return EXIT_OK
         if args.check:
             out.notice(f"New version available: {release.version} (installed: {__version__}). "
-                       "Run  robops self-update  to install it.")
+                       "Run  robops self-update  to install it." if newer else
+                       "robops can start 4 times faster as a folder install: run  robops self-update.")
             return EXIT_OK
         out.info(f"Downloading robops {release.version} from github.com/{repo} …")
-        updater.update_executable(release, updater.current_executable(), session=session)
+        layout = updater.update_executable(release, exe, session=session)
     except updater.UpdateError as exc:
         out.error(str(exc))
         return EXIT_FAILURE
-    out.success(f"robops updated: {__version__} → {release.version}. Run the command again to use it.")
+    except OSError as exc:
+        out.error(f"Could not replace robops' files in {exe.parent}: {exc}. Nothing was changed: "
+                  "close the other robops windows (dashboard, Claude Desktop) and try again.")
+        return EXIT_FAILURE
+    if switch and layout == "folder":
+        out.success(f"robops {release.version} is now installed as a folder in {exe.parent} "
+                    "(robops.exe + its libraries folder): it starts much faster.")
+    out.success(f"robops updated: {__version__} → {release.version}. Run the command again to use it."
+                if newer else f"robops {release.version} reinstalled.")
     return EXIT_OK
 
 
