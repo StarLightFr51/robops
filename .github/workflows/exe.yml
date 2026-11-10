@@ -42,3 +42,5 @@ jobs:
           python exe/build.py --dist dist-next --version "$next"
       - name: Install, update while running, uninstall
         run: python exe/smoke_test.py dist dist-next
+      - name: Same check as the release (reinstalling the same version while running)
+        run: python exe/smoke_test.py dist
