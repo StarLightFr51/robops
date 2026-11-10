@@ -20,12 +20,15 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-import requests
-
 from . import __version__
+
+if TYPE_CHECKING:
+    import requests
+else:
+    from ._lazy import requests  # imported on first use: faster startup
 
 BASE_URL = "https://apis.roblox.com"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -144,7 +147,11 @@ class OpenCloudClient:
         self.backoff_base = backoff_base
         self.timeout = timeout
         self._sleep = sleep
-        self.session = session or requests.Session()
+        if session is None:
+            session = requests.Session()
+            # Player backups and the dashboard use up to 16 threads: as many kept-alive connections.
+            session.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=16))
+        self.session = session
         self.session.headers.update(
             {"x-api-key": api_key, "User-Agent": f"robops/{__version__}"}
         )

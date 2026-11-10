@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import sys
-from importlib import resources
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -578,12 +578,21 @@ def cmd_check(args) -> int:
                 problems += 1
                 continue
             client = _client(env.api_key_env)
-            for place in env.places:
+
+            def reach(place, env=env, client=client):
                 try:
-                    info = client.get_place(env.universe_id, place.place_id)
-                    out.success(f"  {place.name} reachable: '{info.get('displayName', '?')}'")
-                except RobloxApiError as exc:
-                    out.error(f"  {place.name}: {exc.describe()}")
+                    return client.get_place(env.universe_id, place.place_id), None
+                except RobloxApiError as error:
+                    return None, error
+
+            # All places at once (a read of the place, not of the DataStores): one wait instead of one per place.
+            with ThreadPoolExecutor(max_workers=max(1, min(8, len(env.places)))) as pool:
+                results = list(pool.map(reach, env.places))
+            for place, (info, failure) in zip(env.places, results, strict=True):
+                if failure is None:
+                    out.success(f"  {place.name} reachable: '{(info or {}).get('displayName', '?')}'")
+                else:
+                    out.error(f"  {place.name}: {failure.describe()}")
                     problems += 1
     if problems:
         out.error(f"{problems} problem(s) detected.")
@@ -755,6 +764,8 @@ def cmd_init(args) -> int:
         "backup-workflow.yml": Path(".github/workflows/roblox-backup.yml"),
         "rokit.toml": Path("rokit.toml"),
     }
+    from importlib import resources
+
     templates = resources.files("robops") / "templates"
     # Where the workflow loads the robops action from: robops' GitHub repository if known,
     # otherwise a local copy in tools/robops.

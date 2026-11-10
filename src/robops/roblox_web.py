@@ -8,11 +8,14 @@ experience, "playing" only counts the players of the root place.
 
 from __future__ import annotations
 
-from typing import Any
-
-import requests
+from typing import TYPE_CHECKING, Any
 
 from . import __version__
+
+if TYPE_CHECKING:
+    import requests
+else:
+    from ._lazy import requests  # imported on first use: faster startup
 
 
 class WebApiError(Exception):

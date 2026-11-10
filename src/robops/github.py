@@ -8,16 +8,22 @@ needs "Actions: Read and write".
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-
-import requests
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode
 
 from .updater import make_session
+
+if TYPE_CHECKING:
+    import requests
+else:
+    from ._lazy import requests  # imported on first use: faster startup
 
 DEPLOY_WORKFLOW = "roblox-deploy.yml"
 BACKUP_WORKFLOW = "roblox-backup.yml"
@@ -53,11 +59,24 @@ def repo_from_remote(directory: Path) -> str | None:
     return f"{match.group(1)}/{match.group(2)}" if match else None
 
 
+MAX_CACHED = 256
+
+
 @dataclass
 class GitHub:
+    """Keeps one connection pool, and the last answer of each GET with its ETag.
+
+    A GET is sent again with If-None-Match: GitHub answers 304 without a body when
+    nothing changed, and a 304 does not count against the rate limit
+    (5,000 requests per hour with a token), which the dashboard's refresh would
+    otherwise use up.
+    """
+
     repo: str
     session: requests.Session
     api: str = "https://api.github.com"
+    _etags: dict[str, tuple[str, Any]] = field(default_factory=dict, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @classmethod
     def create(cls, repo: str, token_value: str | None) -> GitHub:
@@ -65,10 +84,20 @@ class GitHub:
         return cls(repo, make_session(token_value), api)
 
     def _call(self, method: str, path: str, **kwargs: Any) -> Any:
+        url = f"{self.api}/repos/{self.repo}{path}"
+        cache_key = cached = None
+        if method == "GET":
+            cache_key = url + "?" + urlencode(sorted((kwargs.get("params") or {}).items()))
+            with self._lock:
+                cached = self._etags.get(cache_key)
+            if cached:
+                kwargs["headers"] = {**(kwargs.get("headers") or {}), "If-None-Match": cached[0]}
         try:
-            resp = self.session.request(method, f"{self.api}/repos/{self.repo}{path}", timeout=20, **kwargs)
+            resp = self.session.request(method, url, timeout=20, **kwargs)
         except requests.RequestException as exc:
             raise GitHubError(0, f"Unable to reach GitHub: {exc}") from exc
+        if resp.status_code == 304 and cached:
+            return copy.deepcopy(cached[1])
         if resp.status_code == 204:
             return None
         if resp.status_code >= 400:
@@ -83,7 +112,15 @@ class GitHub:
                 422: "GitHub refused the inputs (does the workflow accept workflow_dispatch on this branch?)",
             }.get(resp.status_code, "")
             raise GitHubError(resp.status_code, f"GitHub HTTP {resp.status_code}: {message} {('— ' + hint) if hint else ''}".strip())
-        return resp.json()
+        payload = resp.json()
+        etag = resp.headers.get("ETag")
+        if cache_key and etag:
+            with self._lock:
+                self._etags.pop(cache_key, None)
+                self._etags[cache_key] = (etag, copy.deepcopy(payload))
+                while len(self._etags) > MAX_CACHED:
+                    del self._etags[next(iter(self._etags))]
+        return payload
 
     def info(self) -> dict:
         return dict(self._call("GET", ""))

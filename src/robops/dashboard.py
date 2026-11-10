@@ -58,6 +58,9 @@ _CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self
         "img-src 'self' data: https://*.rbxcdn.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 
+WORKFLOWS_TTL = 300.0
+
+
 class DashboardError(Exception):
     def __init__(self, status: int, message: str):
         self.status = status
@@ -95,6 +98,13 @@ class Dashboard:
     _history: History | None = None
     _analysis_cache: dict = field(default_factory=dict)
     _stop: threading.Event = field(default_factory=threading.Event)
+    # Kept between requests: connections stay open, and what can't change is not asked again.
+    _cache_lock: threading.Lock = field(default_factory=threading.Lock)
+    _clients: dict = field(default_factory=dict)          # (factory, API key) → OpenCloudClient
+    _github_client: tuple | None = None                   # ((factory, repo, token), GitHub)
+    _workflows: tuple | None = None                       # (time, repo, workflows)
+    _jobs: dict = field(default_factory=dict)             # (run id, attempt) → jobs of a finished run
+    _reports: dict = field(default_factory=dict)          # (universe, store, entry) → playtest report
 
     # ---------------------------------------------------------------- helpers
 
@@ -119,18 +129,27 @@ class Dashboard:
         return self._config().env(name)
 
     def client(self, env: Environment) -> OpenCloudClient:
+        """One client per API key for the dashboard's lifetime: its connections to Roblox stay open."""
         key = os.environ.get(env.api_key_env, "").strip()
         if not key:
             raise DashboardError(
                 400, f"{env.api_key_env} is not set in the terminal that launched the dashboard. "
                      f"In PowerShell:  $env:{env.api_key_env} = \"your-key\"  then run robops dashboard again.")
-        return self.client_factory(key)
+        ident = (self.client_factory, key)
+        with self._cache_lock:
+            if ident not in self._clients:
+                self._clients[ident] = self.client_factory(key)
+            return self._clients[ident]
 
     def github(self) -> GitHub:
         if not self.github_repo:
             raise DashboardError(400, "GitHub repository unknown: run the dashboard from your game's Git "
                                       "folder, or pass --github-repo owner/name.")
-        return self.github_factory(self.github_repo, self.github_token)
+        ident = (self.github_factory, self.github_repo, self.github_token)
+        with self._cache_lock:
+            if self._github_client is None or self._github_client[0] != ident:
+                self._github_client = (ident, self.github_factory(self.github_repo, self.github_token))
+            return self._github_client[1]
 
     def _repo_error(self, exc: GitHubError) -> DashboardError:
         """Turns GitHub's opaque 401/403/404 into what to fix (a private repo always answers 404)."""
@@ -148,19 +167,29 @@ class Dashboard:
                                        f"include {repo.split('/')[-1] if repo else 'the game repository'}.")
         return DashboardError(502, str(exc))
 
-    def _workflow_list(self, gh: GitHub) -> list[dict]:
-        try:
-            gh.info()
-        except GitHubError as exc:
-            raise self._repo_error(exc) from exc
-        try:
-            return gh.workflows()
-        except GitHubError as exc:
-            if exc.status in (403, 404):
-                raise DashboardError(502, f"The token can see {gh.repo} but not its Actions: edit it on "
-                                          "github.com/settings/personal-access-tokens and give it the permission "
-                                          "Actions: Read (Read and write for the Deploy and Back up buttons).") from exc
-            raise
+    def _workflow_list(self, gh: GitHub, *, fresh: bool = False) -> list[dict]:
+        """The repository's workflows, kept 5 minutes (they rarely change): one round trip less per refresh."""
+        with self._cache_lock:
+            kept = self._workflows
+        if not fresh and kept and kept[1] == gh.repo and time.monotonic() - kept[0] < WORKFLOWS_TTL:
+            return list(kept[2])
+        with ThreadPoolExecutor(max_workers=2) as pool:      # both at once; info() only explains errors
+            info, workflows = pool.submit(gh.info), pool.submit(gh.workflows)
+            try:
+                info.result()
+            except GitHubError as exc:
+                raise self._repo_error(exc) from exc
+            try:
+                found = workflows.result()
+            except GitHubError as exc:
+                if exc.status in (403, 404):
+                    raise DashboardError(502, f"The token can see {gh.repo} but not its Actions: edit it on "
+                                              "github.com/settings/personal-access-tokens and give it the permission "
+                                              "Actions: Read (Read and write for the Deploy and Back up buttons).") from exc
+                raise
+        with self._cache_lock:
+            self._workflows = (time.monotonic(), gh.repo, list(found))
+        return found
 
     def _resolve(self, workflows: list[dict], kind: str) -> dict:
         forced = self.deploy_workflow if kind == "deploy" else self.backup_workflow
@@ -176,7 +205,12 @@ class Dashboard:
 
     def _workflow(self, gh: GitHub, kind: str) -> dict:
         """The deploy / backup workflow: robops init's file, a renamed one, or the one forced by option."""
-        return self._resolve(self._workflow_list(gh), kind)
+        try:
+            return self._resolve(self._workflow_list(gh), kind)
+        except DashboardError as exc:
+            if exc.status != 404:
+                raise
+            return self._resolve(self._workflow_list(gh, fresh=True), kind)   # maybe just added
 
     def _artifacts(self) -> list[dict]:
         try:
@@ -192,7 +226,7 @@ class Dashboard:
         steps = [{"level": "ok", "message": "ROBOPS_GITHUB_TOKEN is set."} if self.github_token else
                  {"level": "warn", "message": "ROBOPS_GITHUB_TOKEN is not set: only a public repository can be read."}]
         try:
-            workflows = self._workflow_list(self.github())
+            workflows = self._workflow_list(self.github(), fresh=True)
         except (DashboardError, GitHubError) as exc:
             steps.append({"level": "error", "message": str(exc)})
             return {"repo": self.github_repo, "steps": steps}
@@ -293,7 +327,7 @@ class Dashboard:
         runs = gh.runs(workflow_file(workflow), per_page=15)
 
         def describe(run: dict) -> dict:
-            jobs = _attempt(lambda: gh.jobs(int(run["id"])))
+            jobs = self._run_jobs(gh, run)
             targets = [j.get("name", "") for j in jobs.get("ok") or []]
             env = next((t.split(" ", 1)[1] for t in targets if t.startswith("Publish ")), None)
             kind = "publish" if env else ("verify" if any(t.startswith("Build") for t in targets) else None)
@@ -306,9 +340,23 @@ class Dashboard:
                 "url": run.get("html_url"), "environment": env, "kind": kind,
             }
 
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, min(16, len(runs)))) as pool:
             return {"repo": gh.repo, "workflow": {"file": workflow_file(workflow), "name": workflow.get("name")},
                     "runs": list(pool.map(describe, runs))}
+
+    def _run_jobs(self, gh: GitHub, run: dict) -> dict:
+        """Jobs of a run; a finished run's jobs never change, so they are asked only once."""
+        ident = (gh.repo, run.get("id"), run.get("run_attempt"))
+        with self._cache_lock:
+            if ident in self._jobs:
+                return self._jobs[ident]
+        jobs = _attempt(lambda: gh.jobs(int(run["id"])))
+        if run.get("status") == "completed" and "ok" in jobs:
+            with self._cache_lock:
+                self._jobs[ident] = jobs
+                while len(self._jobs) > 200:
+                    del self._jobs[next(iter(self._jobs))]
+        return jobs
 
     def backups(self) -> dict:
         local: list[dict[str, Any]] = []
@@ -481,16 +529,15 @@ class Dashboard:
             ids: list[str] = []
             cursor = None
             while len(ids) < 500:
-                page, cursor = client.list_entries_page(env.universe_id, env.playtests_datastore, page_token=cursor)
+                page, cursor = client.list_entries_page(env.universe_id, env.playtests_datastore,
+                                                        page_token=cursor, page_size=256)
                 ids += page
                 if not cursor:
                     break
             latest = sorted(ids, key=lambda k: k.rsplit("/", 1)[-1], reverse=True)[:40]
 
             def load(entry_id: str) -> dict:
-                scope, key = pl.split_scoped(entry_id, None)
-                entry = client.get_entry(env.universe_id, env.playtests_datastore, key, scope=scope)
-                return pt.summary(pt.normalize_report(entry_id, entry.get("value"), "datastore"))
+                return pt.summary(self._remote_report(client, env, entry_id))
 
             with ThreadPoolExecutor(max_workers=8) as pool:
                 loaded = list(pool.map(lambda i: _attempt(lambda: load(i)), latest))
@@ -529,9 +576,24 @@ class Dashboard:
             except ValueError as exc:
                 raise DashboardError(400, f"{path.name} is not valid JSON: {exc}") from exc
             return pt.normalize_report(key, value, "file")
-        scope, entry_key = pl.split_scoped(key, None)
-        entry = self.client(env).get_entry(env.universe_id, env.playtests_datastore, entry_key, scope=scope)
-        return pt.normalize_report(key, entry.get("value"), "datastore")
+        return self._remote_report(self.client(env), env, key)
+
+    def _remote_report(self, client: OpenCloudClient, env: Environment, entry_id: str) -> dict:
+        """A report of the DataStore. Each one is written once under a new key (playtest-<time>), so it is
+        read once: reopening the view costs one list call instead of 40 reads of the game's DataStore
+        budget, which live servers share."""
+        ident = (env.universe_id, env.playtests_datastore, entry_id)
+        with self._cache_lock:
+            if ident in self._reports:
+                return self._reports[ident]
+        scope, key = pl.split_scoped(entry_id, None)
+        entry = client.get_entry(env.universe_id, env.playtests_datastore, key, scope=scope)
+        report = pt.normalize_report(entry_id, entry.get("value"), "datastore")
+        with self._cache_lock:
+            self._reports[ident] = report
+            while len(self._reports) > 500:
+                del self._reports[next(iter(self._reports))]
+        return report
 
     def playtest_instructions(self, name: str) -> dict:
         env = self.env(name)
