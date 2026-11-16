@@ -93,6 +93,20 @@ def test_post_requires_json(server):
     assert resp.status_code == 415
 
 
+@pytest.mark.parametrize("length, status", [("abc", 400), ("-1", 400), (str(64 * 1024 * 1024), 413)])
+def test_post_with_a_bad_content_length_is_refused(server, length, status):
+    """Before: "abc" dropped the connection without an answer, and "-1" kept the thread waiting for a body that never comes."""
+    import http.client
+    conn = http.client.HTTPConnection(server.base.removeprefix("http://"), timeout=5)
+    conn.request("POST", "/api/env/staging/restart", body=b'{"confirm": "staging"}',
+                 headers={"X-Robops-Token": server.token, "Content-Type": "application/json",
+                          "Content-Length": length})
+    resp = conn.getresponse()
+    assert resp.status == status and "error" in json.loads(resp.read())
+    assert server.cloud.calls == []
+    assert server.get("/api/summary").status_code == 200          # the server still answers
+
+
 # ------------------------------------------------------------------- reading
 
 def test_summary_lists_environments_and_findings(server):

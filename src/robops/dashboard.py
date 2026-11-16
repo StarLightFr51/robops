@@ -50,6 +50,8 @@ from .stats import RANGES, History, analyze_backup, backup_header, deployment_st
 
 DEFAULT_PORT = 8765
 BACKUP_SUFFIXES = (".json", ".json.gz")
+# Largest request body: a DataStore value is at most 4 MB, sent as JSON (escapes make it grow).
+MAX_BODY_BYTES = 16 * 1024 * 1024
 _STATIC = {"/": "index.html", "/app.js": "app.js", "/charts.js": "charts.js", "/editor.js": "editor.js", "/app.css": "app.css"}
 _FONT_RE = re.compile(r"/fonts/([\w.-]+\.woff2)")
 _TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -920,7 +922,17 @@ def make_handler(app: Dashboard, token: str, port_ref: list[int]) -> type[BaseHT
                 if not self.headers.get("Content-Type", "").startswith("application/json"):
                     self._json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "JSON expected."})
                     return
-                length = int(self.headers.get("Content-Length") or 0)
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = -1
+                if length < 0:      # read(-1) would wait for the client to close the connection
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "Invalid Content-Length."})
+                    return
+                if length > MAX_BODY_BYTES:
+                    self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                               {"error": f"Request too large (more than {MAX_BODY_BYTES // (1024 * 1024)} MB)."})
+                    return
                 try:
                     body = json.loads(self.rfile.read(length) or b"{}")
                 except ValueError:
