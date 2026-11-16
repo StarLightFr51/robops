@@ -67,6 +67,28 @@ def test_apply_edits_and_changed_fields():
         pl.apply_edits({"a": 1}, [], [""])
 
 
+def test_apply_edits_never_replaces_a_value_by_an_object():
+    data = {"stats": 5, "inventory": ["sword"], "name": "Bob", "badges": [], "pets": None}
+    with pytest.raises(pl.PlayerError, match=r"'stats' is a number \(5\), not an object"):
+        pl.apply_edits(data, ["stats.level=10"])
+    with pytest.raises(pl.PlayerError, match="'inventory' is a list of 1 item"):
+        pl.apply_edits(data, ["inventory.shield=1"])
+    with pytest.raises(pl.PlayerError, match="'name' is text"):
+        pl.apply_edits(data, ["name.first=Bob"])
+    # An empty Luau table (stored as [] by Roblox) or a nil can become an object.
+    assert pl.apply_edits(data, ["badges.first=1", "pets.cat=2"]) == {
+        "stats": 5, "inventory": ["sword"], "name": "Bob", "badges": {"first": 1}, "pets": {"cat": 2}}
+    assert data["badges"] == []                         # the original is not modified
+
+
+def test_apply_edits_on_data_that_is_not_an_object():
+    assert pl.apply_edits([], ["coins=1"]) == {"coins": 1}           # empty table
+    assert pl.apply_edits(None, ["coins=1"]) == {"coins": 1}
+    assert pl.apply_edits([1, 2], []) == [1, 2]                      # --data-file alone: kept as it is
+    with pytest.raises(pl.PlayerError, match="Data is a list of 2 item"):
+        pl.apply_edits([1, 2], ["coins=1"])
+
+
 def test_load_backup_formats(tmp_path):
     cfg = pl.PlayersConfig()
     export = tmp_path / "export.json"

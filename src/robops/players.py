@@ -189,9 +189,40 @@ def parse_value(text: str) -> Any:
         return text
 
 
+def _is_empty_table(value: Any) -> bool:
+    """nil, or an empty Luau table: Roblox stores {} as [] since it can't tell an empty array from an empty object."""
+    return value is None or value == [] or value == {}
+
+
+def _json_kind(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true/false"
+    if isinstance(value, (int, float)):
+        return f"a number ({value})"
+    if isinstance(value, str):
+        return "text"
+    if isinstance(value, list):
+        return f"a list of {len(value)} item(s)"
+    return type(value).__name__
+
+
 def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ()) -> Any:
-    """Applies `path.to.field=value` edits to a copy of Data."""
-    result = copy.deepcopy(data) if isinstance(data, dict) else {}
+    """Applies `path.to.field=value` edits to a copy of Data.
+
+    A missing or empty table on the path is created as an object. A value that holds
+    something else (number, text, non-empty list) is never silently replaced by an
+    object: `--set stats.level=10` on `"stats": 5` would lose the 5.
+    """
+    sets, unsets = list(sets), list(unsets)
+    if not sets and not unsets:
+        return copy.deepcopy(data)
+    if isinstance(data, dict):
+        result = copy.deepcopy(data)
+    elif _is_empty_table(data):
+        result = {}
+    else:
+        raise PlayerError(f"Data is {_json_kind(data)}, not an object: --set / --unset can't change it. "
+                          "Use --data-file to replace it entirely.")
     node: Any
     for item in sets:
         if "=" not in item:
@@ -201,11 +232,18 @@ def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ())
         if not parts:
             raise PlayerError(f"Empty path in --set {item!r}.")
         node = result
-        for part in parts[:-1]:
+        for depth, part in enumerate(parts[:-1]):
             child = node.get(part)
-            if not isinstance(child, dict):
+            if _is_empty_table(child):
                 child = {}
                 node[part] = child
+            elif not isinstance(child, dict):
+                where = ".".join(parts[:depth + 1])
+                raise PlayerError(
+                    f"--set {item!r}: '{where}' is {_json_kind(child)}, not an object, so it can't hold "
+                    f"'{parts[depth + 1]}'. Nothing was changed. To replace it, set it whole: "
+                    f"--set '{where}={{...}}'."
+                )
             node = child
         node[parts[-1]] = parse_value(raw)
     for path in unsets:
