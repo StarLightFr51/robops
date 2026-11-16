@@ -267,7 +267,7 @@ def test_check_refuses_a_file_that_is_not_a_place(repo, capsys):
     assert "game.rbxm is not a place file" in capsys.readouterr().err
 
 
-def test_datastore_export_then_import_roundtrip(repo, monkeypatch):
+def test_datastore_export_then_import_roundtrip(repo, monkeypatch, capsys):
     from test_players import FakeDataStore
     monkeypatch.setenv("ROBLOX_API_KEY", "k")
     store = FakeDataStore({"motd": "Hello", "event": {"x2": True}}, datastore="GameConfig")
@@ -281,8 +281,14 @@ def test_datastore_export_then_import_roundtrip(repo, monkeypatch):
     (repo / "export.json").write_text(json.dumps(exported), encoding="utf-8")
     assert cli.main(["ds", "import", "GameConfig", "export.json", "--universe-id", "99", "--no-snapshot"]) == 0
     written = {key: body["value"] for key, body, _ in store.patches}
-    assert written == {"motd": "Double XP!", "event": {"x2": True}}
+    assert written == {"motd": "Double XP!"}             # "event" already held this value: not rewritten
     assert all(body["etag"].startswith("etag-") for _, body, _ in store.patches)   # conditioned writes
+    assert "1 entries overwritten in GameConfig, 1 already up to date" in capsys.readouterr().out
+
+    # --clear-metadata does not read the entries (key without the read permission): everything is written.
+    assert cli.main(["ds", "import", "GameConfig", "export.json", "--universe-id", "99", "--no-snapshot",
+                     "--clear-metadata"]) == 0
+    assert [key for key, _, _ in store.patches] == ["motd", "event", "motd"]
 
 
 def test_datastore_import_rejects_non_object(repo, capsys):

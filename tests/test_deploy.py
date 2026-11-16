@@ -172,3 +172,25 @@ def test_build_command_keeps_windows_backslashes():
     from robops.deploy import build_argv
     assert build_argv(r"rojo build -o build\game.rbxl", windows=True) == r"rojo build -o build\game.rbxl"
     assert build_argv("rojo build -o 'my game.rbxl'", windows=False) == ["rojo", "build", "-o", "my game.rbxl"]
+
+
+def test_entries_that_already_hold_the_value_are_not_rewritten(project):
+    """No new revision and no write budget spent for a key whose value did not change."""
+    client = FakeClient(existing_entries={
+        "motd": {"value": "Hello", "etag": "e1"},                       # same value
+        "event": {"value": {"x2": 1}, "etag": "e2"},                    # 1 is not true for the game
+    })
+    report = run(project, DeployOptions(with_datastores=True, restart=False), client)
+    writes = [c for c in client.calls if c[0] == "set_entry"]
+    assert writes == [("set_entry", "GameConfig", "event", {"x2": True}, None, None)]
+    assert (report.datastore_writes, report.datastore_unchanged) == (1, 1)
+    assert "DataStores: 1 entries overwritten, 1 already up to date." in report.to_markdown()
+
+
+def test_same_value_compares_values_as_the_game_sees_them():
+    from robops.deploy import same_value
+    assert same_value({"b": [1, 2], "a": {"x": 1.0}}, {"a": {"x": 1}, "b": [1, 2]})   # key order, 1 == 1.0
+    assert same_value({"a": 1}, {"a": 1, "gone": None})          # null fields are not written
+    assert not same_value(1, True) and not same_value({"a": 0}, {"a": False})
+    assert not same_value("1", 1) and not same_value([1, 2], [2, 1])
+    assert not same_value({"a": 1}, {"a": 1, "b": 2})

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from . import output as out
-from .client import OpenCloudClient, RobloxApiError
+from .client import OpenCloudClient, RobloxApiError, without_nulls
 from .config import DatastoreSeed, Environment, PlaceConfig
 
 PLACE_SUFFIXES = (".rbxl", ".rbxlx")     # the only files Open Cloud accepts as a place
@@ -63,6 +63,7 @@ class DeployReport:
     dry_run: bool
     places: list[PlaceOutcome] = field(default_factory=list)
     datastore_writes: int = 0
+    datastore_unchanged: int = 0          # entries that already held the value: not rewritten
     restarted: bool = False
     restart_planned: bool = False
     error: str | None = None              # set when the deployment stopped halfway
@@ -98,8 +99,10 @@ class DeployReport:
                 f"| {p.name} | `{p.place_id}` | `{p.file.name}` | {_human(p.size)} | {version} | {p.metadata} |"
             )
         lines.append("")
-        if self.datastore_writes:
-            lines.append(f"DataStores: {self.datastore_writes} entries overwritten.")
+        if self.datastore_writes or self.datastore_unchanged:
+            lines.append(f"DataStores: {self.datastore_writes} entries overwritten"
+                         + (f", {self.datastore_unchanged} already up to date" if self.datastore_unchanged else "")
+                         + ".")
         if self.dry_run:
             lines.append(f"Server restart: {'planned' if self.restart_planned else 'not planned'}.")
         else:
@@ -174,19 +177,76 @@ def overwrite_entry(
     The write is conditioned on the etag that was read: if a game server changes
     the entry in between, Roblox refuses the update instead of losing one of them.
     """
-    users = attributes = etag = None
-    if preserve_metadata:
-        try:
-            current = client.get_entry(universe_id, datastore, key, scope=scope)
-            users = current.get("users") or None
-            attributes = current.get("attributes") or None
-            etag = current.get("etag") or None
-        except RobloxApiError as exc:
-            if exc.status != 404:
-                raise
+    current = read_entry(client, universe_id, datastore, key, scope=scope) if preserve_metadata else None
+    return _write_over(client, universe_id, datastore, key, value, scope, current)
+
+
+def sync_entry(
+    client: OpenCloudClient,
+    universe_id: int,
+    datastore: str,
+    key: str,
+    value: Any,
+    *,
+    scope: str | None = None,
+) -> bool:
+    """Like overwrite_entry, but leaves alone an entry that already holds this value.
+
+    The entry is read anyway (to keep its users/attributes), so the comparison is free,
+    and an unchanged key then costs no write budget and creates no new revision.
+    Returns True if the entry was written.
+    """
+    current = read_entry(client, universe_id, datastore, key, scope=scope)
+    if current is not None and "value" in current and same_value(current["value"], value):
+        return False
+    _write_over(client, universe_id, datastore, key, value, scope, current)
+    return True
+
+
+def read_entry(client: OpenCloudClient, universe_id: int, datastore: str, key: str, *,
+               scope: str | None = None) -> dict | None:
+    """The entry (value, users, attributes, etag…), or None if it does not exist."""
+    try:
+        return client.get_entry(universe_id, datastore, key, scope=scope)
+    except RobloxApiError as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+
+def _write_over(client: OpenCloudClient, universe_id: int, datastore: str, key: str, value: Any,
+                scope: str | None, current: dict | None) -> dict:
+    """Writes `value`, sending back the users/attributes of the entry that was read, conditioned on its etag."""
+    current = current or {}
     return client.set_entry(
-        universe_id, datastore, key, value, scope=scope, users=users, attributes=attributes, etag=etag
+        universe_id, datastore, key, value, scope=scope,
+        users=current.get("users") or None,
+        attributes=current.get("attributes") or None,
+        etag=current.get("etag") or None,
     )
+
+
+def _as_luau(value: Any) -> Any:
+    """Luau has a single number type: 1 and 1.0 are the same value."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: _as_luau(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_as_luau(v) for v in value]
+    return value
+
+
+def same_value(stored: Any, wanted: Any) -> bool:
+    """True if the DataStore already holds `wanted`, as robops would write it (without null fields).
+
+    Compared as JSON text: in Python True == 1, but for a game `true` and `1` are different.
+    Key order does not matter, and 1 / 1.0 are equal (one number type in Luau).
+    """
+    def text(value: Any) -> str:
+        return json.dumps(_as_luau(value), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+    return text(stored) == text(without_nulls(wanted))
 
 
 # --------------------------------------------------------------- deployment
@@ -307,10 +367,15 @@ def _run_steps(
             else:
                 out.info(f"Snapshot already taken today (latest: {snap.get('latestSnapshotTime')}).")
             for seed, data in seeds:
+                before = report.datastore_writes          # counted entry by entry: right even after a failure
                 for key, value in data.items():
-                    overwrite_entry(client, env.universe_id, seed.name, key, value, scope=seed.scope)
-                    report.datastore_writes += 1
-                out.success(f"{seed.name}: {len(data)} entries overwritten")
+                    if sync_entry(client, env.universe_id, seed.name, key, value, scope=seed.scope):
+                        report.datastore_writes += 1
+                    else:
+                        report.datastore_unchanged += 1
+                written = report.datastore_writes - before
+                out.success(f"{seed.name}: {written} entries overwritten"
+                            + (f", {len(data) - written} already up to date" if written < len(data) else ""))
 
     # 6. Restart
     if restart:

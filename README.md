@@ -16,7 +16,7 @@ push main ──► Rojo build ──► checks ──► publish places ──�
 | Checks | files present, `.rbxl`/`.rbxlx`, valid data JSON — **before** any network call | — |
 | Publishing | each place is overwritten by its file (new `Published` or `Saved` version) | `universe-places:write` |
 | Metadata | name, description, players per server | `universe.place:write` |
-| DataStores | backup snapshot, then overwrite the keys from a JSON | `universe-datastores.objects:update` + `:create` + `universe-datastores.control:snapshot` |
+| DataStores | backup snapshot, then overwrite the keys from a JSON (keys that already hold their value are left alone) | `universe-datastores.objects:read` + `:update` + `:create` + `universe-datastores.control:snapshot` |
 | Restart | switches the servers to the new version | `universe:write` |
 | Players (`robops player`) | backup, restore, edit ProfileStore / DataService profiles | `universe-datastores.objects:list` + `:read` + `:update` (+ `:create`, `:delete`) |
 
@@ -417,6 +417,7 @@ For data, every deployment with `--with-datastores` takes a snapshot first: prev
 - Publishing is limited to about **30 requests per minute** per key owner.
 - Only one DataStores snapshot per UTC day; later ones have no effect.
 - Overwriting a DataStore entry erases its `users` and `attributes` on Roblox's side: `robops` reads them back and sends them again automatically (can be disabled with `--clear-metadata`).
+- `deploy --with-datastores` and `ds import` compare each key with what it already holds (that read happens anyway, for the metadata) and skip the unchanged ones: no new revision, no write budget used. With `--clear-metadata`, nothing is read, so every key is written.
 
 ## Development
 

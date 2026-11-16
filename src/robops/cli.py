@@ -17,7 +17,7 @@ from .checks import check_environment
 from .claude_desktop import ClaudeDesktopError
 from .client import OpenCloudClient, RobloxApiError
 from .config import DEFAULT_CONFIG, ConfigError, load_config
-from .deploy import PLACE_SUFFIXES, DeployError, DeployOptions, deploy, overwrite_entry
+from .deploy import PLACE_SUFFIXES, DeployError, DeployOptions, deploy, overwrite_entry, sync_entry
 
 EXIT_OK, EXIT_FAILURE, EXIT_USAGE = 0, 1, 2
 
@@ -267,10 +267,16 @@ def cmd_ds_import(args) -> int:
     if not args.no_snapshot:
         snap = client.snapshot_datastores(universe_id)
         out.info(f"Snapshot: {'created' if snap.get('newSnapshotTaken') else 'already taken today'}.")
+    written = 0
     for key, value in data.items():
-        overwrite_entry(client, universe_id, args.datastore, key, value,
-                        scope=args.scope, preserve_metadata=not args.clear_metadata)
-    out.success(f"{len(data)} entries overwritten in {args.datastore}.")
+        if args.clear_metadata:      # no read (e.g. a key without the read permission): always written
+            overwrite_entry(client, universe_id, args.datastore, key, value, scope=args.scope, preserve_metadata=False)
+            written += 1
+        elif sync_entry(client, universe_id, args.datastore, key, value, scope=args.scope):
+            written += 1
+    unchanged = len(data) - written
+    out.success(f"{written} entries overwritten in {args.datastore}"
+                + (f", {unchanged} already up to date (not rewritten)" if unchanged else "") + ".")
     return EXIT_OK
 
 
