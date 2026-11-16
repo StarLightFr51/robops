@@ -247,6 +247,8 @@ robops ds set GameConfig motd --value '"Double XP this weekend!"' --env producti
 robops ds list PlayerData --prefix user_ --env staging
 robops ds export GameConfig --out backup.json --env production
 robops ds import GameConfig data/config.json --env production --dry-run
+robops ds diff GameConfig data/config.json --env production   # what an import would change (read only)
+robops ds diff --env production --exit-code       # the [[datastores]] of robops.toml; exit code 1 if they differ
 robops ds delete GameConfig old_key --env staging
 robops ds snapshot --env production
 

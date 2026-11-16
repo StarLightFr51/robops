@@ -19,6 +19,7 @@ import os
 import shlex
 import subprocess
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from typing import Any
 from . import output as out
 from .client import OpenCloudClient, RobloxApiError, without_nulls
 from .config import DatastoreSeed, Environment, PlaceConfig
+from .players import changed_fields
 
 PLACE_SUFFIXES = (".rbxl", ".rbxlx")     # the only files Open Cloud accepts as a place
 
@@ -247,6 +249,43 @@ def same_value(stored: Any, wanted: Any) -> bool:
         return json.dumps(_as_luau(value), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
     return text(stored) == text(without_nulls(wanted))
+
+
+@dataclass
+class EntryDiff:
+    key: str
+    status: str                                       # "create" | "change" | "same"
+    fields: list[str] = field(default_factory=list)   # for an object that changes: "~ coins", "+ event.x2"…
+
+
+def diff_entries(
+    client: OpenCloudClient,
+    universe_id: int,
+    datastore: str,
+    data: dict[str, Any],
+    *,
+    scope: str | None = None,
+    workers: int = 4,
+) -> list[EntryDiff]:
+    """What writing `data` ({key: value}) would change in the DataStore, in the order of `data`.
+
+    Read only (universe-datastores.objects:read). Keys are read `workers` at a time.
+    """
+    def compare(item: tuple[str, Any]) -> EntryDiff:
+        key, wanted = item
+        current = read_entry(client, universe_id, datastore, key, scope=scope)
+        if current is None or "value" not in current:
+            return EntryDiff(key, "create")
+        if same_value(current["value"], wanted):
+            return EntryDiff(key, "same")
+        stored, new = current["value"], without_nulls(wanted)
+        fields = changed_fields(stored, new) if isinstance(stored, dict) and isinstance(new, dict) else []
+        return EntryDiff(key, "change", fields)
+
+    if not data:
+        return []
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, 16, len(data)))) as pool:
+        return list(pool.map(compare, data.items()))
 
 
 # --------------------------------------------------------------- deployment

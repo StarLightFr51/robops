@@ -295,3 +295,48 @@ def test_datastore_import_rejects_non_object(repo, capsys):
     (repo / "seed.json").write_text("[1, 2]", encoding="utf-8")
     assert cli.main(["ds", "import", "Config", "seed.json", "--universe-id", "1"]) == 2
     assert "JSON object" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ ds diff
+
+@pytest.fixture
+def game_config(repo, monkeypatch):
+    from test_players import FakeDataStore
+    monkeypatch.setenv("ROBLOX_API_KEY", "k")
+    store = FakeDataStore({"motd": "Hello", "event": {"x2": True}, "shop": [1, 2]}, datastore="GameConfig")
+    monkeypatch.setattr(cli.OpenCloudClient, "__init__", _patched_init(FakeSession(router=store)))
+    return store
+
+
+def test_ds_diff_shows_what_an_import_would_change_without_writing(repo, game_config, capsys):
+    (repo / "seed.json").write_text(json.dumps({"motd": "Hello", "event": {"x2": False, "x3": True},
+                                                "shop": [1, 2.0], "newKey": 1}), encoding="utf-8")
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99"]) == 0
+    text = capsys.readouterr()
+    assert text.out.splitlines() == ["~ GameConfig/event", "    ~ x2", "    + x3", "+ GameConfig/newKey  (new key)"]
+    assert "GameConfig: 1 to create, 1 to change, 2 already up to date." in text.err
+    assert game_config.patches == [] and game_config.deletes == []         # read only
+
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99", "--exit-code"]) == 1
+    (repo / "seed.json").write_text(json.dumps({"motd": "Hello", "shop": [1, 2]}), encoding="utf-8")
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99", "--exit-code"]) == 0
+
+
+def test_ds_diff_compares_the_datastores_of_the_environment(repo, game_config, capsys):
+    (repo / "config.json").write_text(json.dumps({"motd": "Double XP!"}), encoding="utf-8")
+    (repo / "robops.toml").write_text(CONFIG + "\n[[environments.staging.datastores]]\nname = 'GameConfig'\n"
+                                               "file = 'config.json'\n", encoding="utf-8")
+    assert cli.main(["ds", "diff", "--env", "staging"]) == 0
+    text = capsys.readouterr()
+    assert text.out.splitlines() == ["~ GameConfig/motd"]
+    assert "GameConfig: 0 to create, 1 to change, 0 already up to date." in text.err
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["ds", "diff", "GameConfig", "--universe-id", "1"], "Give a DataStore and a JSON file, or neither"),
+    (["ds", "diff", "--universe-id", "1"], "or --env to compare"),
+    (["ds", "diff", "--env", "staging"], "No [[environments.staging.datastores]]"),
+])
+def test_ds_diff_usage_errors(repo, game_config, capsys, argv, message):
+    assert cli.main(argv) == 2
+    assert message in capsys.readouterr().err
