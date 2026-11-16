@@ -3,6 +3,44 @@
 All notable changes to robops. Versions follow [semantic versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH`.
 
+## 1.9.0
+
+### Added
+- **`robops ds diff`**: what an import would change, without writing anything (read permission only).
+  `robops ds diff GameConfig data/config.json --env production` lists the keys to create (`+`) and to change
+  (`~`, with the fields that change in an object); identical keys are only counted. Without a DataStore and a
+  file, `robops ds diff --env production` compares every `[[datastores]]` of the environment, as
+  `deploy --with-datastores` would write them. `--exit-code` exits with 1 when something differs (for CI).
+- `robops check` reads the `[[datastores]]` files the way a deployment does: invalid JSON, a JSON that is not an
+  object or a file that is not UTF-8 is an error (it said "present"), and it shows how many entries each one has.
+  A place `file` that is not a `.rbxl` / `.rbxlx` is an error too. Both used to fail only halfway through a
+  deployment, after the build.
+
+### Changed
+- `deploy --with-datastores` and `ds import` no longer rewrite the keys that already hold their value: no new
+  revision, no DataStore write budget used. The entry was read anyway (to keep its users and attributes), so it
+  costs nothing. Values are compared as the game sees them: key order does not matter and `1` equals `1.0`, but
+  `true` is not `1`. The summary says how many were already up to date. With `ds import --clear-metadata`
+  nothing is read, so every key is still written.
+
+### Fixed
+- `robops check` ignored `--api-key-env`: it looked for the variable of `robops.toml` and, with `--online`,
+  never used the key you named.
+- `player edit --set stats.level=10` replaced `stats` by `{"level": 10}` when it held something else (a number,
+  text, a non-empty list), losing the old value. It is now refused with the path and how to replace it whole.
+  An empty table or a missing field still becomes an object. `--data-file` with a JSON that is not an object no
+  longer writes `{}`.
+- A player backup that failed halfway (permission refused while listing, disk full, Ctrl+C) left its
+  `.tmp` file, with the players' data read so far. It is now deleted.
+- Files saved with a UTF-8 BOM (PowerShell 5 `Out-File -Encoding utf8`, Notepad before Windows 10 1903) are
+  accepted: `robops.toml` failed with "Invalid statement (at line 1, column 1)" and JSON files with
+  "Unexpected UTF-8 BOM". A file in another encoding (ANSI, UTF-16) gets a clear message instead of an
+  "Unexpected error (UnicodeDecodeError)".
+- Dashboard: a request with an invalid `Content-Length` was dropped without an answer, `-1` kept a server thread
+  waiting forever, and there was no size limit. They now get 400, or 413 above 16 MB.
+- README: `universe-datastores.objects:read`, needed to keep an entry's metadata, was missing from the
+  permissions of the DataStores step.
+
 ## 1.8.0
 
 ### Changed
