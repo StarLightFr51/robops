@@ -67,6 +67,28 @@ def test_apply_edits_and_changed_fields():
         pl.apply_edits({"a": 1}, [], [""])
 
 
+def test_apply_edits_never_replaces_a_value_by_an_object():
+    data = {"stats": 5, "inventory": ["sword"], "name": "Bob", "badges": [], "pets": None}
+    with pytest.raises(pl.PlayerError, match=r"'stats' is a number \(5\), not an object"):
+        pl.apply_edits(data, ["stats.level=10"])
+    with pytest.raises(pl.PlayerError, match="'inventory' is a list of 1 item"):
+        pl.apply_edits(data, ["inventory.shield=1"])
+    with pytest.raises(pl.PlayerError, match="'name' is text"):
+        pl.apply_edits(data, ["name.first=Bob"])
+    # An empty Luau table (stored as [] by Roblox) or a nil can become an object.
+    assert pl.apply_edits(data, ["badges.first=1", "pets.cat=2"]) == {
+        "stats": 5, "inventory": ["sword"], "name": "Bob", "badges": {"first": 1}, "pets": {"cat": 2}}
+    assert data["badges"] == []                         # the original is not modified
+
+
+def test_apply_edits_on_data_that_is_not_an_object():
+    assert pl.apply_edits([], ["coins=1"]) == {"coins": 1}           # empty table
+    assert pl.apply_edits(None, ["coins=1"]) == {"coins": 1}
+    assert pl.apply_edits([1, 2], []) == [1, 2]                      # --data-file alone: kept as it is
+    with pytest.raises(pl.PlayerError, match="Data is a list of 2 item"):
+        pl.apply_edits([1, 2], ["coins=1"])
+
+
 def test_load_backup_formats(tmp_path):
     cfg = pl.PlayersConfig()
     export = tmp_path / "export.json"
@@ -251,6 +273,42 @@ def test_edit_dry_run_then_write(store, capsys):
     assert run("edit", "2", "--set", "coins=1", "--force") == 0
 
 
+def test_edit_refuses_to_replace_a_value_and_reads_data_files_with_a_bom(store, tmp_path, capsys):
+    assert run("edit", "1", "--set", "coins.gold=5") == 1                # coins is a number: refused, not replaced
+    assert store.patches == [] and "'coins' is a number (10), not an object" in capsys.readouterr().err
+    data_file = tmp_path / "data.json"
+    data_file.write_bytes(b"\xef\xbb\xbf" + b'{"coins": 99}')        # PowerShell 5 Out-File -Encoding utf8
+    assert run("edit", "1", "--data-file", str(data_file)) == 0
+    assert store.patches[-1][1]["value"]["Data"] == {"coins": 99}
+
+
+@pytest.mark.parametrize("content", ["null", "5", '"text"', "[1, 2]"])
+def test_edit_data_file_must_hold_an_object(store, tmp_path, capsys, content):
+    """null would remove Data from the profile; a number or a list would break ProfileStore in the game."""
+    data_file = tmp_path / "data.json"
+    data_file.write_text(content, encoding="utf-8")
+    assert run("edit", "1", "--data-file", str(data_file)) == 2
+    assert store.patches == [] and "must contain a JSON object" in capsys.readouterr().err
+
+
+def test_edit_data_file_with_an_empty_table(store, tmp_path):
+    data_file = tmp_path / "data.json"
+    data_file.write_text("[]", encoding="utf-8")                    # how Roblox exports an empty table
+    assert run("edit", "1", "--data-file", str(data_file)) == 0
+    assert store.patches[-1][1]["value"]["Data"] == {}
+
+
+def test_changed_fields_sees_values_as_the_game_does():
+    assert pl.changed_fields({"flag": 1, "n": 2}, {"flag": True, "n": 2.0}) == ["~ flag"]   # Python: True == 1
+    assert pl.changed_fields({"bag": []}, {"bag": {}}) == []
+
+
+def test_edit_from_1_to_true_is_written(store):
+    store.entries["PLAYER_1"]["value"]["Data"] = {"vip": 1}
+    assert run("edit", "1", "--set", "vip=true") == 0
+    assert store.patches[-1][1]["value"]["Data"] == {"vip": True}
+
+
 def test_delete_requires_yes(store):
     assert run("delete", "1") == 2
     assert run("delete", "1", "--yes") == 0
@@ -339,6 +397,34 @@ def test_backup_without_scope_handles_scope_prefixed_ids(store, tmp_path):
     assert result.count == 3 and result.errors == {}
     data = json.loads((tmp_path / "b.json").read_text(encoding="utf-8"))
     assert set(data["profiles"]) == {"1", "2", "3"}
+
+
+@pytest.mark.parametrize("name", ["b.json", "b.json.gz"])
+def test_failed_backup_leaves_no_partial_file(tmp_path, name):
+    """The listing is refused on its second page: no truncated copy of players' data stays on disk."""
+    class Client:
+        def list_entry_ids(self, universe_id, datastore, scope=None):
+            yield from (f"PLAYER_{i}" for i in range(100))
+            raise pl.RobloxApiError(403, "Missing permission universe-datastores.objects:list")
+
+        def get_entry(self, universe_id, datastore, key, scope=None):
+            return {"value": profile({"coins": 1})}
+
+    with pytest.raises(pl.RobloxApiError, match="403"):
+        pl.backup_players(Client(), 99, pl.PlayersConfig(), tmp_path / "backups" / name)  # type: ignore[arg-type]
+    assert list((tmp_path / "backups").iterdir()) == []
+
+
+def test_complete_backup_is_kept_when_the_rename_fails(store, tmp_path, monkeypatch):
+    """On Windows the rename fails while another program has the old file open: the backup must survive."""
+    def locked(src, dst):
+        raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+    monkeypatch.setattr(pl.os, "replace", locked)
+    client = OpenCloudClient("k", session=FakeSession(router=store), sleep=lambda s: None)
+    with pytest.raises(PermissionError):
+        pl.backup_players(client, 99, pl.PlayersConfig(), tmp_path / "b.json")
+    kept = json.loads((tmp_path / "b.json.tmp").read_text(encoding="utf-8"))
+    assert kept["count"] == 3
 
 
 def test_split_scoped():

@@ -19,13 +19,17 @@ import os
 import shlex
 import subprocess
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import output as out
-from .client import OpenCloudClient, RobloxApiError
+from .client import OpenCloudClient, RobloxApiError, without_nulls
 from .config import DatastoreSeed, Environment, PlaceConfig
+from .players import changed_fields, same_json
+
+PLACE_SUFFIXES = (".rbxl", ".rbxlx")     # the only files Open Cloud accepts as a place
 
 
 class DeployError(Exception):
@@ -61,6 +65,7 @@ class DeployReport:
     dry_run: bool
     places: list[PlaceOutcome] = field(default_factory=list)
     datastore_writes: int = 0
+    datastore_unchanged: int = 0          # entries that already held the value: not rewritten
     restarted: bool = False
     restart_planned: bool = False
     error: str | None = None              # set when the deployment stopped halfway
@@ -96,8 +101,10 @@ class DeployReport:
                 f"| {p.name} | `{p.place_id}` | `{p.file.name}` | {_human(p.size)} | {version} | {p.metadata} |"
             )
         lines.append("")
-        if self.datastore_writes:
-            lines.append(f"DataStores: {self.datastore_writes} entries overwritten.")
+        if self.datastore_writes or self.datastore_unchanged:
+            lines.append(f"DataStores: {self.datastore_writes} entries overwritten"
+                         + (f", {self.datastore_unchanged} already up to date" if self.datastore_unchanged else "")
+                         + ".")
         if self.dry_run:
             lines.append(f"Server restart: {'planned' if self.restart_planned else 'not planned'}.")
         else:
@@ -145,7 +152,9 @@ def load_seed(seed: DatastoreSeed) -> dict[str, Any]:
     if not seed.file.is_file():
         raise DeployError(f"Data file not found for DataStore '{seed.name}': {seed.file}")
     try:
-        data = json.loads(seed.file.read_text(encoding="utf-8"))
+        data = json.loads(seed.file.read_text(encoding="utf-8-sig"))   # BOM accepted (PowerShell 5)
+    except UnicodeDecodeError as exc:
+        raise DeployError(f"{seed.file} is not UTF-8 text: save it as UTF-8 ({exc.reason}).") from exc
     except json.JSONDecodeError as exc:
         raise DeployError(f"{seed.file} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
@@ -170,19 +179,107 @@ def overwrite_entry(
     The write is conditioned on the etag that was read: if a game server changes
     the entry in between, Roblox refuses the update instead of losing one of them.
     """
-    users = attributes = etag = None
-    if preserve_metadata:
-        try:
-            current = client.get_entry(universe_id, datastore, key, scope=scope)
-            users = current.get("users") or None
-            attributes = current.get("attributes") or None
-            etag = current.get("etag") or None
-        except RobloxApiError as exc:
-            if exc.status != 404:
-                raise
+    current = read_entry(client, universe_id, datastore, key, scope=scope) if preserve_metadata else None
+    return _write_over(client, universe_id, datastore, key, value, scope, current)
+
+
+def sync_entry(
+    client: OpenCloudClient,
+    universe_id: int,
+    datastore: str,
+    key: str,
+    value: Any,
+    *,
+    scope: str | None = None,
+) -> bool:
+    """Like overwrite_entry, but leaves alone an entry that already holds this value.
+
+    The entry is read anyway (to keep its users/attributes), so the comparison is free,
+    and an unchanged key then costs no write budget and creates no new revision.
+    Returns True if the entry was written.
+    """
+    current = read_entry(client, universe_id, datastore, key, scope=scope)
+    if current is not None and "value" in current and same_value(current["value"], value):
+        return False
+    _write_over(client, universe_id, datastore, key, value, scope, current)
+    return True
+
+
+def read_entry(client: OpenCloudClient, universe_id: int, datastore: str, key: str, *,
+               scope: str | None = None) -> dict | None:
+    """The entry (value, users, attributes, etag…), or None if it does not exist.
+
+    A deleted entry is kept by Roblox (state DELETED) until it is purged, 30 days later: for
+    the game it no longer exists, so it is treated as missing (and gets written again).
+    """
+    try:
+        entry = client.get_entry(universe_id, datastore, key, scope=scope)
+    except RobloxApiError as exc:
+        if exc.status == 404:
+            return None
+        raise
+    return None if entry.get("state") == "DELETED" else entry
+
+
+def _write_over(client: OpenCloudClient, universe_id: int, datastore: str, key: str, value: Any,
+                scope: str | None, current: dict | None) -> dict:
+    """Writes `value`, sending back the users/attributes of the entry that was read, conditioned on its etag."""
+    current = current or {}
     return client.set_entry(
-        universe_id, datastore, key, value, scope=scope, users=users, attributes=attributes, etag=etag
+        universe_id, datastore, key, value, scope=scope,
+        users=current.get("users") or None,
+        attributes=current.get("attributes") or None,
+        etag=current.get("etag") or None,
     )
+
+
+def same_value(stored: Any, wanted: Any) -> bool:
+    """True if the DataStore already holds `wanted`, as robops would write it (without null fields).
+
+    Equality as the game sees it (players.same_json): `true` is not `1`, but 1 and 1.0 are equal,
+    key order does not matter, and {} is the same empty table as [].
+    """
+    return same_json(stored, without_nulls(wanted))
+
+
+@dataclass
+class EntryDiff:
+    key: str
+    status: str                                       # "create" | "change" | "same"
+    fields: list[str] = field(default_factory=list)   # for an object that changes: "~ coins", "+ event.x2"…
+
+
+def diff_entries(
+    client: OpenCloudClient,
+    universe_id: int,
+    datastore: str,
+    data: dict[str, Any],
+    *,
+    scope: str | None = None,
+    workers: int = 4,
+) -> list[EntryDiff]:
+    """What writing `data` ({key: value}) would change in the DataStore, in the order of `data`.
+
+    Read only (universe-datastores.objects:read). Keys are read `workers` at a time.
+    """
+    def compare(item: tuple[str, Any]) -> EntryDiff:
+        key, wanted = item
+        current = read_entry(client, universe_id, datastore, key, scope=scope)
+        if current is None or "value" not in current:
+            return EntryDiff(key, "create")
+        if same_value(current["value"], wanted):
+            return EntryDiff(key, "same")
+        stored, new = current["value"], without_nulls(wanted)
+        fields = changed_fields(stored, new) if isinstance(stored, dict) and isinstance(new, dict) else []
+        return EntryDiff(key, "change", fields)
+
+    items = list(data.items())
+    results: list[EntryDiff] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, 16))) as pool:
+        # By batches: after an error (403…) or Ctrl+C, at most one batch of reads is still waited for.
+        for start in range(0, len(items), 64):
+            results.extend(pool.map(compare, items[start:start + 64]))
+    return results
 
 
 # --------------------------------------------------------------- deployment
@@ -238,7 +335,7 @@ def _run_steps(
         for place in places:
             if not place.file.is_file():
                 raise DeployError(f"[{place.name}] file not found: {place.file}")
-            if place.file.suffix.lower() not in (".rbxl", ".rbxlx"):
+            if place.file.suffix.lower() not in PLACE_SUFFIXES:
                 raise DeployError(f"[{place.name}] {place.file.name} must be a .rbxl or .rbxlx")
             size = place.file.stat().st_size
             if size == 0:
@@ -303,10 +400,15 @@ def _run_steps(
             else:
                 out.info(f"Snapshot already taken today (latest: {snap.get('latestSnapshotTime')}).")
             for seed, data in seeds:
+                before = report.datastore_writes          # counted entry by entry: right even after a failure
                 for key, value in data.items():
-                    overwrite_entry(client, env.universe_id, seed.name, key, value, scope=seed.scope)
-                    report.datastore_writes += 1
-                out.success(f"{seed.name}: {len(data)} entries overwritten")
+                    if sync_entry(client, env.universe_id, seed.name, key, value, scope=seed.scope):
+                        report.datastore_writes += 1
+                    else:
+                        report.datastore_unchanged += 1
+                written = report.datastore_writes - before
+                out.success(f"{seed.name}: {written} entries overwritten"
+                            + (f", {len(data) - written} already up to date" if written < len(data) else ""))
 
     # 6. Restart
     if restart:

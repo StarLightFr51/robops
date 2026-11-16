@@ -6,6 +6,7 @@ import os
 from dataclasses import asdict, dataclass
 
 from .config import Config, ConfigError, Environment
+from .deploy import PLACE_SUFFIXES, DeployError, load_seed
 
 
 @dataclass
@@ -17,12 +18,18 @@ class Finding:
         return asdict(self)
 
 
-def check_environment(cfg: Config, name: str) -> tuple[Environment | None, list[Finding]]:
-    """Validates the environment (fields, ${VAR}, files, API key presence) without any network call."""
+def check_environment(cfg: Config, name: str, *,
+                      key_env: str | None = None) -> tuple[Environment | None, list[Finding]]:
+    """Validates the environment (fields, ${VAR}, files, API key presence) without any network call.
+
+    `key_env` overrides the variable holding the API key (--api-key-env), as for `robops deploy`.
+    """
     try:
         env = cfg.env(name)
     except ConfigError as exc:
         return None, [Finding("error", str(exc))]
+    if key_env:
+        env.api_key_env = key_env
     findings = [Finding("ok", f"universe {env.universe_id}, {len(env.places)} place(s), version {env.version_type}")]
     if env.build_command:
         findings.append(Finding("info", f"build: {env.build_command}"))
@@ -32,13 +39,22 @@ def check_environment(cfg: Config, name: str) -> tuple[Environment | None, list[
     for place in env.places:
         state = "present" if place.file.is_file() else "missing (will be produced by the build?)"
         findings.append(Finding("info", f"  • {place.name} → {place.place_id} : {place.file.name} {state}"))
+        if place.file.suffix.lower() not in PLACE_SUFFIXES:
+            # The deployment would refuse it anyway, but only after the build.
+            findings.append(Finding("error", f"  • {place.name}: {place.file.name} is not a place file. Roblox only "
+                                             "accepts .rbxl or .rbxlx: check `file` (and the build's --output)."))
     for seed in env.datastores:
-        if seed.file.is_file():
-            findings.append(Finding("info", f"  • DataStore {seed.name} ← {seed.file.name} present"))
-        else:
+        if not seed.file.is_file():
             findings.append(Finding("error", f"  • DataStore {seed.name}: file not found ({seed.file}). Create it, "
                                              f"or comment out the [[environments.{name}.datastores]] section "
                                              "if you don't use it."))
+            continue
+        try:
+            entries = load_seed(seed)         # same reading as `deploy --with-datastores`
+        except (DeployError, OSError) as exc:
+            findings.append(Finding("error", f"  • DataStore {seed.name}: {exc}"))
+            continue
+        findings.append(Finding("info", f"  • DataStore {seed.name} ← {seed.file.name}: {len(entries)} entries"))
     if not os.environ.get(env.api_key_env):
         findings.append(Finding(
             "warn",

@@ -16,7 +16,7 @@ push main ──► Rojo build ──► checks ──► publish places ──�
 | Checks | files present, `.rbxl`/`.rbxlx`, valid data JSON — **before** any network call | — |
 | Publishing | each place is overwritten by its file (new `Published` or `Saved` version) | `universe-places:write` |
 | Metadata | name, description, players per server | `universe.place:write` |
-| DataStores | backup snapshot, then overwrite the keys from a JSON | `universe-datastores.objects:update` + `:create` + `universe-datastores.control:snapshot` |
+| DataStores | backup snapshot, then overwrite the keys from a JSON (keys that already hold their value are left alone) | `universe-datastores.objects:read` + `:update` + `:create` + `universe-datastores.control:snapshot` |
 | Restart | switches the servers to the new version | `universe:write` |
 | Players (`robops player`) | backup, restore, edit ProfileStore / DataService profiles | `universe-datastores.objects:list` + `:read` + `:update` (+ `:create`, `:delete`) |
 
@@ -247,6 +247,8 @@ robops ds set GameConfig motd --value '"Double XP this weekend!"' --env producti
 robops ds list PlayerData --prefix user_ --env staging
 robops ds export GameConfig --out backup.json --env production
 robops ds import GameConfig data/config.json --env production --dry-run
+robops ds diff GameConfig data/config.json --env production   # what an import would change (read only)
+robops ds diff --env production --exit-code       # the [[datastores]] of robops.toml; exit code 3 if they differ
 robops ds delete GameConfig old_key --env staging
 robops ds snapshot --env production
 
@@ -257,7 +259,7 @@ robops dashboard
 robops mcp install
 ```
 
-Exit codes: `0` success, `1` Roblox/deployment failure, `2` configuration or usage error. An unexpected error prints a one-line message; `ROBOPS_DEBUG=1` shows the full Python traceback.
+Exit codes: `0` success, `1` Roblox/deployment failure, `2` configuration or usage error, `3` differences found by `ds diff --exit-code`. An unexpected error prints a one-line message; `ROBOPS_DEBUG=1` shows the full Python traceback.
 
 Publishing a place is never retried after a network error or a 5xx answer once the file may have reached Roblox (that would create a second version): the message then asks you to check the place's version history.
 
@@ -417,6 +419,7 @@ For data, every deployment with `--with-datastores` takes a snapshot first: prev
 - Publishing is limited to about **30 requests per minute** per key owner.
 - Only one DataStores snapshot per UTC day; later ones have no effect.
 - Overwriting a DataStore entry erases its `users` and `attributes` on Roblox's side: `robops` reads them back and sends them again automatically (can be disabled with `--clear-metadata`).
+- `deploy --with-datastores` and `ds import` compare each key with what it already holds (that read happens anyway, for the metadata) and skip the unchanged ones: no new revision, no write budget used. With `--clear-metadata`, nothing is read, so every key is written.
 
 ## Development
 

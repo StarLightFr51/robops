@@ -17,9 +17,19 @@ from .checks import check_environment
 from .claude_desktop import ClaudeDesktopError
 from .client import OpenCloudClient, RobloxApiError
 from .config import DEFAULT_CONFIG, ConfigError, load_config
-from .deploy import DeployError, DeployOptions, deploy, overwrite_entry
+from .deploy import (
+    PLACE_SUFFIXES,
+    DeployError,
+    DeployOptions,
+    deploy,
+    diff_entries,
+    load_seed,
+    overwrite_entry,
+    sync_entry,
+)
 
 EXIT_OK, EXIT_FAILURE, EXIT_USAGE = 0, 1, 2
+EXIT_DIFFERENT = 3      # ds diff --exit-code: something differs (1 and 2 stay errors)
 
 
 class UsageError(Exception):
@@ -96,7 +106,10 @@ def _parse_value(args) -> Any:
     if args.value is not None and args.file is not None:
         raise UsageError("Use --value OR --file, not both.")
     if args.file is not None:
-        text = Path(args.file).read_text(encoding="utf-8")
+        try:
+            text = Path(args.file).read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise UsageError(f"{args.file} is not UTF-8 text: save it as UTF-8 ({exc.reason}).") from None
     elif args.value is not None:
         text = args.value
     else:
@@ -166,7 +179,7 @@ def cmd_publish(args) -> int:
     path = Path(args.file)
     if not path.is_file():
         raise UsageError(f"File not found: {path}")
-    if path.suffix.lower() not in (".rbxl", ".rbxlx"):
+    if path.suffix.lower() not in PLACE_SUFFIXES:
         raise UsageError(f"{path.name}: a place must be a .rbxl or .rbxlx file.")
     universe_id, place_id, key_env = _place_target(args)
     result = _client(key_env).publish_place(universe_id, place_id, path, version_type=args.version_type)
@@ -247,31 +260,82 @@ def cmd_ds_export(args) -> int:
     return EXIT_OK
 
 
-def cmd_ds_import(args) -> int:
-    path = Path(args.file)
+def _read_json_object(path: Path) -> dict[str, Any]:
+    """A JSON file holding {"key": value, ...} (ds import, ds diff)."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))   # BOM accepted (PowerShell 5)
     except FileNotFoundError:
         raise UsageError(f"File not found: {path}") from None
+    except UnicodeDecodeError as exc:
+        raise UsageError(f"{path} is not UTF-8 text: save it as UTF-8 ({exc.reason}).") from None
     except json.JSONDecodeError as exc:
         raise UsageError(f"{path} is not valid JSON: {exc}") from None
     if not isinstance(data, dict):
         raise UsageError(f"{path} must contain a JSON object {{\"key\": value}}.")
+    return data
+
+
+def cmd_ds_import(args) -> int:
+    data = _read_json_object(Path(args.file))
     universe_id, _, key_env = _resolve_target(args, need_place=False)
     if args.dry_run:
         out.notice(f"Dry-run: {len(data)} entries would be overwritten in {args.datastore}.")
         for key in data:
             print(f"  {key}")
+        out.info(f"To see which ones really change (read only):  robops ds diff {args.datastore} {args.file} …")
         return EXIT_OK
     client = _client(key_env)
     if not args.no_snapshot:
         snap = client.snapshot_datastores(universe_id)
         out.info(f"Snapshot: {'created' if snap.get('newSnapshotTaken') else 'already taken today'}.")
+    written = 0
     for key, value in data.items():
-        overwrite_entry(client, universe_id, args.datastore, key, value,
-                        scope=args.scope, preserve_metadata=not args.clear_metadata)
-    out.success(f"{len(data)} entries overwritten in {args.datastore}.")
+        if args.clear_metadata:      # no read (e.g. a key without the read permission): always written
+            overwrite_entry(client, universe_id, args.datastore, key, value, scope=args.scope, preserve_metadata=False)
+            written += 1
+        elif sync_entry(client, universe_id, args.datastore, key, value, scope=args.scope):
+            written += 1
+    unchanged = len(data) - written
+    out.success(f"{written} entries overwritten in {args.datastore}"
+                + (f", {unchanged} already up to date (not rewritten)" if unchanged else "") + ".")
     return EXIT_OK
+
+
+def cmd_ds_diff(args) -> int:
+    """What `ds import` (or `deploy --with-datastores`, without a file) would change, without writing anything."""
+    if (args.datastore is None) != (args.file is None):
+        raise UsageError("Give a DataStore and a JSON file, or neither with --env "
+                         "(then the [[datastores]] of robops.toml are compared).")
+    universe_id, _, key_env = _resolve_target(args, need_place=False)
+    if args.datastore is not None:
+        targets = [(args.datastore, _read_json_object(Path(args.file)), args.scope)]
+    else:
+        if not args.env:
+            raise UsageError("Give a DataStore and a JSON file, or --env to compare the [[datastores]] of robops.toml.")
+        seeds = load_config(args.config).env(args.env).datastores
+        if not seeds:
+            raise UsageError(f"No [[environments.{args.env}.datastores]] in {args.config}: "
+                             "give a DataStore and a JSON file.")
+        targets = [(seed.name, load_seed(seed), args.scope or seed.scope) for seed in seeds]
+
+    client = _client(key_env)
+    differences = 0
+    for datastore, data, scope in targets:
+        diffs = diff_entries(client, universe_id, datastore, data, scope=scope, workers=args.workers)
+        for diff in diffs:
+            if diff.status == "same":
+                continue
+            print(f"+ {datastore}/{diff.key}  (new key)" if diff.status == "create" else f"~ {datastore}/{diff.key}")
+            for line in diff.fields[:20]:
+                print(f"    {line}")
+            if len(diff.fields) > 20:
+                print(f"    … and {len(diff.fields) - 20} more")
+        created = sum(1 for d in diffs if d.status == "create")
+        changed = sum(1 for d in diffs if d.status == "change")
+        differences += created + changed
+        _status(f"{datastore}: {created} to create, {changed} to change, "
+                f"{len(diffs) - created - changed} already up to date.")
+    return EXIT_DIFFERENT if args.exit_code and differences else EXIT_OK
 
 
 def cmd_ds_stores(args) -> int:
@@ -501,9 +565,15 @@ def cmd_player_edit(args) -> int:
     data = current.value.get("Data")
     if args.data_file:
         try:
-            data = json.loads(Path(args.data_file).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            data = json.loads(Path(args.data_file).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:          # ValueError: invalid JSON, or not UTF-8 text
             raise UsageError(f"{args.data_file} unreadable: {exc}") from None
+        if data == []:                                # an empty Luau table, as Roblox exports it
+            data = {}
+        if not isinstance(data, dict):
+            # null would remove Data from the profile; a number or a list would break ProfileStore in the game.
+            raise UsageError(f"{args.data_file} must contain a JSON object: the player's whole Data "
+                             f"(it holds {type(data).__name__ if data is not None else 'null'}).")
     new_data = pl.apply_edits(data, args.set or [], args.unset or [])
     changes = pl.changed_fields(current.value.get("Data"), new_data)
     if not changes:
@@ -580,7 +650,7 @@ def cmd_check(args) -> int:
     problems = 0
     for name in names:
         with out.group(f"Environment {name}"):
-            env, findings = check_environment(cfg, name)
+            env, findings = check_environment(cfg, name, key_env=args.api_key_env)
             for finding in findings:
                 printers[finding.level](finding.message)
             problems += sum(1 for f in findings if f.level == "error")
@@ -926,6 +996,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--clear-metadata", action="store_true", help="do not try to keep users/attributes")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_ds_import)
+
+    p = ds.add_parser("diff", parents=[common],
+                      help="compare a JSON {key: value} with the DataStore, without writing anything")
+    p.add_argument("datastore", nargs="?", help="DataStore name (omit it, and FILE, to compare every "
+                                                "[[datastores]] of the --env environment)")
+    p.add_argument("file", nargs="?", help="JSON file {key: value}")
+    _add_ds_common(p)
+    p.add_argument("--workers", type=int, default=4, help="parallel reads (1 to 16, default 4)")
+    p.add_argument("--exit-code", action="store_true", help="exit with 3 when something differs, for CI (1 and 2 stay errors)")
+    p.set_defaults(func=cmd_ds_diff)
 
     p = ds.add_parser("stores", parents=[common], help="list the experience's DataStores")
     _add_target(p, place=False)

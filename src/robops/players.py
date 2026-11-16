@@ -189,9 +189,40 @@ def parse_value(text: str) -> Any:
         return text
 
 
+def _is_empty_table(value: Any) -> bool:
+    """nil, or an empty Luau table: Roblox stores {} as [] since it can't tell an empty array from an empty object."""
+    return value is None or value == [] or value == {}
+
+
+def _json_kind(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true/false"
+    if isinstance(value, (int, float)):
+        return f"a number ({value})"
+    if isinstance(value, str):
+        return "text"
+    if isinstance(value, list):
+        return f"a list of {len(value)} item(s)"
+    return type(value).__name__
+
+
 def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ()) -> Any:
-    """Applies `path.to.field=value` edits to a copy of Data."""
-    result = copy.deepcopy(data) if isinstance(data, dict) else {}
+    """Applies `path.to.field=value` edits to a copy of Data.
+
+    A missing or empty table on the path is created as an object. A value that holds
+    something else (number, text, non-empty list) is never silently replaced by an
+    object: `--set stats.level=10` on `"stats": 5` would lose the 5.
+    """
+    sets, unsets = list(sets), list(unsets)
+    if not sets and not unsets:
+        return copy.deepcopy(data)
+    if isinstance(data, dict):
+        result = copy.deepcopy(data)
+    elif _is_empty_table(data):
+        result = {}
+    else:
+        raise PlayerError(f"Data is {_json_kind(data)}, not an object: --set / --unset can't change it. "
+                          "Replace the whole Data with --data-file.")
     node: Any
     for item in sets:
         if "=" not in item:
@@ -201,11 +232,18 @@ def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ())
         if not parts:
             raise PlayerError(f"Empty path in --set {item!r}.")
         node = result
-        for part in parts[:-1]:
+        for depth, part in enumerate(parts[:-1]):
             child = node.get(part)
-            if not isinstance(child, dict):
+            if _is_empty_table(child):
                 child = {}
                 node[part] = child
+            elif not isinstance(child, dict):
+                where = ".".join(parts[:depth + 1])
+                raise PlayerError(
+                    f"--set {item!r}: '{where}' is {_json_kind(child)}, not an object, so it can't hold "
+                    f"'{parts[depth + 1]}'. Nothing was changed. To replace it, set it whole: "
+                    f"--set '{where}={{...}}'."
+                )
             node = child
         node[parts[-1]] = parse_value(raw)
     for path in unsets:
@@ -222,10 +260,33 @@ def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ())
     return result
 
 
+def _as_luau(value: Any) -> Any:
+    """The value as a game reads it: one number type (1 and 1.0 are equal), and an empty
+    object is the same empty table as an empty list (Roblox stores {} as [])."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: _as_luau(v) for k, v in value.items()} if value else []
+    if isinstance(value, list):
+        return [_as_luau(v) for v in value]
+    return value
+
+
+def same_json(a: Any, b: Any) -> bool:
+    """Equality as the game sees it. Not Python's ==, for which True == 1: a game tells `true` from `1`.
+
+    Compared as JSON text (key order ignored), after _as_luau.
+    """
+    def text(value: Any) -> str:
+        return json.dumps(_as_luau(value), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+    return a is b or text(a) == text(b)
+
+
 def changed_fields(before: Any, after: Any, prefix: str = "") -> list[str]:
     """Readable list of the Data fields that change (two levels deep)."""
     if not isinstance(before, dict) or not isinstance(after, dict):
-        return [prefix or "Data"] if before != after else []
+        return [prefix or "Data"] if not same_json(before, after) else []
     changes: list[str] = []
     for key in sorted(set(before) | set(after), key=str):
         name = f"{prefix}{key}"
@@ -233,7 +294,7 @@ def changed_fields(before: Any, after: Any, prefix: str = "") -> list[str]:
             changes.append(f"+ {name}")
         elif key not in after:
             changes.append(f"- {name}")
-        elif before[key] != after[key]:
+        elif not same_json(before[key], after[key]):
             if isinstance(before[key], dict) and isinstance(after[key], dict) and not prefix:
                 changes.extend(changed_fields(before[key], after[key], f"{name}."))
             else:
@@ -406,21 +467,28 @@ def backup_players(
                 return
 
     keys = matching_keys()
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, 16))) as pool, _open_text(tmp_path, "w") as fh:
-        fh.write(json.dumps(header, ensure_ascii=False)[:-1] + ', "profiles": {')
-        first = True
-        for chunk in _chunks(keys, 64):
-            for key, record, error in pool.map(fetch, chunk):
-                if error:
-                    errors[cfg.user_id(key)] = error
-                    continue
-                fh.write(("" if first else ",") + "\n  " + json.dumps(cfg.user_id(key)) + ": "
-                         + json.dumps(record, ensure_ascii=False, separators=(",", ":")))
-                first = False
-                count += 1
-            if progress:
-                progress(count)
-        fh.write("\n}, " + f'"count": {count}, "errors": ' + json.dumps(errors, ensure_ascii=False) + "}\n")
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, 16))) as pool, _open_text(tmp_path, "w") as fh:
+            fh.write(json.dumps(header, ensure_ascii=False)[:-1] + ', "profiles": {')
+            first = True
+            for chunk in _chunks(keys, 64):
+                for key, record, error in pool.map(fetch, chunk):
+                    if error:
+                        errors[cfg.user_id(key)] = error
+                        continue
+                    fh.write(("" if first else ",") + "\n  " + json.dumps(cfg.user_id(key)) + ": "
+                             + json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+                    first = False
+                    count += 1
+                if progress:
+                    progress(count)
+            fh.write("\n}, " + f'"count": {count}, "errors": ' + json.dumps(errors, ensure_ascii=False) + "}\n")
+    except BaseException:
+        # Listing refused halfway, disk full, Ctrl+C…: don't leave a truncated file of players' personal data.
+        tmp_path.unlink(missing_ok=True)
+        raise
+    # Outside the cleanup: if the rename fails (on Windows, another program has the old file open),
+    # the complete backup stays in the .tmp file instead of being deleted.
     os.replace(tmp_path, out_path)
     return BackupResult(out_path, count, errors, other_count, others)
 

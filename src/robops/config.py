@@ -179,7 +179,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
     if not config_path.is_file():
         raise ConfigError(f"Configuration file not found: {config_path}")
     try:
-        raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        # utf-8-sig: also accepts a file saved with a BOM (Notepad before Windows 10 1903, PowerShell 5).
+        raw = tomllib.loads(config_path.read_text(encoding="utf-8-sig"))
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"{config_path} is not UTF-8 text: save it as UTF-8 ({exc.reason}).") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{config_path} is not valid TOML: {exc}") from exc
 

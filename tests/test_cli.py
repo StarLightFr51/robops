@@ -215,13 +215,59 @@ def test_check_valid_config_offline_and_online(repo, monkeypatch, capsys):
     assert cli.main(["check", "--online"]) == 1
 
 
+def test_check_honours_api_key_env(repo, monkeypatch, capsys):
+    """--api-key-env changes the variable read by `check`, as it does for `deploy`."""
+    monkeypatch.setenv("MY_STAGING_KEY", "k")
+    keys = []
+    monkeypatch.setattr(cli, "_client", lambda env_name: keys.append(env_name) or _Reachable())
+    assert cli.main(["check", "--online", "--api-key-env", "MY_STAGING_KEY"]) == 0
+    assert keys == ["MY_STAGING_KEY"]
+    assert "ROBLOX_API_KEY is not set" not in capsys.readouterr().err
+    assert cli.main(["check", "staging", "--online", "--api-key-env", "MISSING_KEY"]) == 1
+    assert "MISSING_KEY is not set" in capsys.readouterr().err
+
+
+class _Reachable:
+    def get_place(self, universe_id, place_id):
+        return {"displayName": "My game"}
+
+
 def test_check_reports_missing_datastore_file(repo, capsys):
     (repo / "robops.toml").write_text(CONFIG + "\n[[environments.staging.datastores]]\nname = 'C'\nfile = 'nope.json'\n", encoding="utf-8")
     assert cli.main(["check"]) == 1
     assert "file not found" in capsys.readouterr().err
 
 
-def test_datastore_export_then_import_roundtrip(repo, monkeypatch):
+@pytest.mark.parametrize("content, message", [
+    ("{not json", "is not valid JSON"),
+    ('["a", "b"]', "must contain a JSON object"),
+    (b"\xff\xfe{\x00}\x00", "is not UTF-8 text"),           # saved as UTF-16 by an old editor
+])
+def test_check_reads_datastore_files_like_deploy(repo, capsys, content, message):
+    """A seed file that `deploy --with-datastores` would refuse is an error for `check`, before any deploy."""
+    path = repo / "seed.json"
+    path.write_bytes(content) if isinstance(content, bytes) else path.write_text(content, encoding="utf-8")
+    (repo / "robops.toml").write_text(CONFIG + "\n[[environments.staging.datastores]]\nname = 'C'\nfile = 'seed.json'\n",
+                                      encoding="utf-8")
+    assert cli.main(["check"]) == 1
+    assert message in capsys.readouterr().err
+
+
+def test_check_counts_datastore_entries(repo, capsys):
+    (repo / "seed.json").write_text('{"motd": "Hello", "event": {"x2": true}}', encoding="utf-8")
+    (repo / "robops.toml").write_text(CONFIG + "\n[[environments.staging.datastores]]\nname = 'C'\nfile = 'seed.json'\n",
+                                      encoding="utf-8")
+    assert cli.main(["check"]) == 0
+    assert "DataStore C ← seed.json: 2 entries" in capsys.readouterr().out
+
+
+def test_check_refuses_a_file_that_is_not_a_place(repo, capsys):
+    (repo / "robops.toml").write_text(CONFIG.replace("game.rbxl", "build/game.rbxm"), encoding="utf-8")
+    assert cli.main(["check"]) == 1                      # caught before the build, not halfway through a deploy
+    assert "game.rbxm is not a place file" in capsys.readouterr().err
+
+
+def test_datastore_export_then_import_roundtrip(repo, monkeypatch, capsys):
     from test_players import FakeDataStore
     monkeypatch.setenv("ROBLOX_API_KEY", "k")
     store = FakeDataStore({"motd": "Hello", "event": {"x2": True}}, datastore="GameConfig")
@@ -235,11 +281,96 @@ def test_datastore_export_then_import_roundtrip(repo, monkeypatch):
     (repo / "export.json").write_text(json.dumps(exported), encoding="utf-8")
     assert cli.main(["ds", "import", "GameConfig", "export.json", "--universe-id", "99", "--no-snapshot"]) == 0
     written = {key: body["value"] for key, body, _ in store.patches}
-    assert written == {"motd": "Double XP!", "event": {"x2": True}}
+    assert written == {"motd": "Double XP!"}             # "event" already held this value: not rewritten
     assert all(body["etag"].startswith("etag-") for _, body, _ in store.patches)   # conditioned writes
+    assert "1 entries overwritten in GameConfig, 1 already up to date" in capsys.readouterr().out
+
+    # --clear-metadata does not read the entries (key without the read permission): everything is written.
+    assert cli.main(["ds", "import", "GameConfig", "export.json", "--universe-id", "99", "--no-snapshot",
+                     "--clear-metadata"]) == 0
+    assert [key for key, _, _ in store.patches] == ["motd", "event", "motd"]
 
 
 def test_datastore_import_rejects_non_object(repo, capsys):
     (repo / "seed.json").write_text("[1, 2]", encoding="utf-8")
     assert cli.main(["ds", "import", "Config", "seed.json", "--universe-id", "1"]) == 2
     assert "JSON object" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ ds diff
+
+@pytest.fixture
+def game_config(repo, monkeypatch):
+    from test_players import FakeDataStore
+    monkeypatch.setenv("ROBLOX_API_KEY", "k")
+    store = FakeDataStore({"motd": "Hello", "event": {"x2": True}, "shop": [1, 2]}, datastore="GameConfig")
+    monkeypatch.setattr(cli.OpenCloudClient, "__init__", _patched_init(FakeSession(router=store)))
+    return store
+
+
+def test_ds_diff_shows_what_an_import_would_change_without_writing(repo, game_config, capsys):
+    (repo / "seed.json").write_text(json.dumps({"motd": "Hello", "event": {"x2": False, "x3": True},
+                                                "shop": [1, 2.0], "newKey": 1}), encoding="utf-8")
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99"]) == 0
+    text = capsys.readouterr()
+    assert text.out.splitlines() == ["~ GameConfig/event", "    ~ x2", "    + x3", "+ GameConfig/newKey  (new key)"]
+    assert "GameConfig: 1 to create, 1 to change, 2 already up to date." in text.err
+    assert game_config.patches == [] and game_config.deletes == []         # read only
+
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99", "--exit-code"]) == 3
+    (repo / "seed.json").write_text(json.dumps({"motd": "Hello", "shop": [1, 2]}), encoding="utf-8")
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99", "--exit-code"]) == 0
+
+
+def test_ds_diff_compares_the_datastores_of_the_environment(repo, game_config, capsys):
+    (repo / "config.json").write_text(json.dumps({"motd": "Double XP!"}), encoding="utf-8")
+    (repo / "robops.toml").write_text(CONFIG + "\n[[environments.staging.datastores]]\nname = 'GameConfig'\n"
+                                               "file = 'config.json'\n", encoding="utf-8")
+    assert cli.main(["ds", "diff", "--env", "staging"]) == 0
+    text = capsys.readouterr()
+    assert text.out.splitlines() == ["~ GameConfig/motd"]
+    assert "GameConfig: 0 to create, 1 to change, 0 already up to date." in text.err
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["ds", "diff", "GameConfig", "--universe-id", "1"], "Give a DataStore and a JSON file, or neither"),
+    (["ds", "diff", "--universe-id", "1"], "or --env to compare"),
+    (["ds", "diff", "--env", "staging"], "No [[environments.staging.datastores]]"),
+])
+def test_ds_diff_usage_errors(repo, game_config, capsys, argv, message):
+    assert cli.main(argv) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_json_files_saved_with_a_bom_are_accepted(repo, game_config, capsys):
+    """PowerShell 5: ConvertTo-Json | Out-File -Encoding utf8 writes a BOM before the JSON."""
+    (repo / "seed.json").write_bytes(b"\xef\xbb\xbf" + json.dumps({"motd": "Hello"}).encode("utf-8"))
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99"]) == 0
+    assert cli.main(["ds", "import", "GameConfig", "seed.json", "--universe-id", "99", "--no-snapshot"]) == 0
+    assert cli.main(["ds", "set", "GameConfig", "motd", "--file", "seed.json", "--universe-id", "99"]) == 0
+    assert game_config.entries["motd"]["value"] == {"motd": "Hello"}
+    (repo / "robops.toml").write_text(CONFIG + "\n[[environments.staging.datastores]]\nname = 'C'\nfile = 'seed.json'\n",
+                                      encoding="utf-8")
+    assert cli.main(["check"]) == 0
+
+
+def test_value_file_that_is_not_utf8_is_a_usage_error(repo, game_config, capsys):
+    (repo / "value.json").write_bytes('"café"'.encode("cp1252"))
+    assert cli.main(["ds", "set", "GameConfig", "motd", "--file", "value.json", "--universe-id", "99"]) == 2
+    assert "is not UTF-8 text" in capsys.readouterr().err
+
+
+def test_ds_diff_exit_code_tells_a_difference_from_an_error(repo, monkeypatch, capsys):
+    """3 = something differs; a refused key (403) stays 1, so a CI script can tell them apart."""
+    monkeypatch.setenv("ROBLOX_API_KEY", "k")
+    session = FakeSession(router=lambda m, u, kw: FakeResponse(403, {"message": "Forbidden"}))
+    monkeypatch.setattr(cli.OpenCloudClient, "__init__", _patched_init(session))
+    (repo / "seed.json").write_text('{"motd": "Hello"}', encoding="utf-8")
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99", "--exit-code"]) == 1
+
+
+def test_ds_diff_shows_a_field_that_goes_from_1_to_true(repo, game_config, capsys):
+    game_config.entries["event"]["value"] = {"x2": 1}
+    (repo / "seed.json").write_text('{"event": {"x2": true}}', encoding="utf-8")
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["~ GameConfig/event", "    ~ x2"]
