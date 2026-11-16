@@ -238,6 +238,35 @@ def test_check_reports_missing_datastore_file(repo, capsys):
     assert "file not found" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("content, message", [
+    ("{not json", "is not valid JSON"),
+    ('["a", "b"]', "must contain a JSON object"),
+    (b"\xff\xfe{\x00}\x00", "is not UTF-8 text"),           # saved as UTF-16 by an old editor
+])
+def test_check_reads_datastore_files_like_deploy(repo, capsys, content, message):
+    """A seed file that `deploy --with-datastores` would refuse is an error for `check`, before any deploy."""
+    path = repo / "seed.json"
+    path.write_bytes(content) if isinstance(content, bytes) else path.write_text(content, encoding="utf-8")
+    (repo / "robops.toml").write_text(CONFIG + "\n[[environments.staging.datastores]]\nname = 'C'\nfile = 'seed.json'\n",
+                                      encoding="utf-8")
+    assert cli.main(["check"]) == 1
+    assert message in capsys.readouterr().err
+
+
+def test_check_counts_datastore_entries(repo, capsys):
+    (repo / "seed.json").write_text('{"motd": "Hello", "event": {"x2": true}}', encoding="utf-8")
+    (repo / "robops.toml").write_text(CONFIG + "\n[[environments.staging.datastores]]\nname = 'C'\nfile = 'seed.json'\n",
+                                      encoding="utf-8")
+    assert cli.main(["check"]) == 0
+    assert "DataStore C ← seed.json: 2 entries" in capsys.readouterr().out
+
+
+def test_check_refuses_a_file_that_is_not_a_place(repo, capsys):
+    (repo / "robops.toml").write_text(CONFIG.replace("game.rbxl", "build/game.rbxm"), encoding="utf-8")
+    assert cli.main(["check"]) == 1                      # caught before the build, not halfway through a deploy
+    assert "game.rbxm is not a place file" in capsys.readouterr().err
+
+
 def test_datastore_export_then_import_roundtrip(repo, monkeypatch):
     from test_players import FakeDataStore
     monkeypatch.setenv("ROBLOX_API_KEY", "k")

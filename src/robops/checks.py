@@ -6,6 +6,7 @@ import os
 from dataclasses import asdict, dataclass
 
 from .config import Config, ConfigError, Environment
+from .deploy import PLACE_SUFFIXES, DeployError, load_seed
 
 
 @dataclass
@@ -38,13 +39,22 @@ def check_environment(cfg: Config, name: str, *,
     for place in env.places:
         state = "present" if place.file.is_file() else "missing (will be produced by the build?)"
         findings.append(Finding("info", f"  • {place.name} → {place.place_id} : {place.file.name} {state}"))
+        if place.file.suffix.lower() not in PLACE_SUFFIXES:
+            # The deployment would refuse it anyway, but only after the build.
+            findings.append(Finding("error", f"  • {place.name}: {place.file.name} is not a place file. Roblox only "
+                                             "accepts .rbxl or .rbxlx: check `file` (and the build's --output)."))
     for seed in env.datastores:
-        if seed.file.is_file():
-            findings.append(Finding("info", f"  • DataStore {seed.name} ← {seed.file.name} present"))
-        else:
+        if not seed.file.is_file():
             findings.append(Finding("error", f"  • DataStore {seed.name}: file not found ({seed.file}). Create it, "
                                              f"or comment out the [[environments.{name}.datastores]] section "
                                              "if you don't use it."))
+            continue
+        try:
+            entries = load_seed(seed)         # same reading as `deploy --with-datastores`
+        except (DeployError, OSError) as exc:
+            findings.append(Finding("error", f"  • DataStore {seed.name}: {exc}"))
+            continue
+        findings.append(Finding("info", f"  • DataStore {seed.name} ← {seed.file.name}: {len(entries)} entries"))
     if not os.environ.get(env.api_key_env):
         findings.append(Finding(
             "warn",

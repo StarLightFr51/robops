@@ -27,6 +27,8 @@ from . import output as out
 from .client import OpenCloudClient, RobloxApiError
 from .config import DatastoreSeed, Environment, PlaceConfig
 
+PLACE_SUFFIXES = (".rbxl", ".rbxlx")     # the only files Open Cloud accepts as a place
+
 
 class DeployError(Exception):
     pass
@@ -146,6 +148,8 @@ def load_seed(seed: DatastoreSeed) -> dict[str, Any]:
         raise DeployError(f"Data file not found for DataStore '{seed.name}': {seed.file}")
     try:
         data = json.loads(seed.file.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise DeployError(f"{seed.file} is not UTF-8 text: save it as UTF-8 ({exc.reason}).") from exc
     except json.JSONDecodeError as exc:
         raise DeployError(f"{seed.file} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
@@ -238,7 +242,7 @@ def _run_steps(
         for place in places:
             if not place.file.is_file():
                 raise DeployError(f"[{place.name}] file not found: {place.file}")
-            if place.file.suffix.lower() not in (".rbxl", ".rbxlx"):
+            if place.file.suffix.lower() not in PLACE_SUFFIXES:
                 raise DeployError(f"[{place.name}] {place.file.name} must be a .rbxl or .rbxlx")
             size = place.file.stat().st_size
             if size == 0:

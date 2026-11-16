@@ -17,7 +17,7 @@ from .checks import check_environment
 from .claude_desktop import ClaudeDesktopError
 from .client import OpenCloudClient, RobloxApiError
 from .config import DEFAULT_CONFIG, ConfigError, load_config
-from .deploy import DeployError, DeployOptions, deploy, overwrite_entry
+from .deploy import PLACE_SUFFIXES, DeployError, DeployOptions, deploy, overwrite_entry
 
 EXIT_OK, EXIT_FAILURE, EXIT_USAGE = 0, 1, 2
 
@@ -166,7 +166,7 @@ def cmd_publish(args) -> int:
     path = Path(args.file)
     if not path.is_file():
         raise UsageError(f"File not found: {path}")
-    if path.suffix.lower() not in (".rbxl", ".rbxlx"):
+    if path.suffix.lower() not in PLACE_SUFFIXES:
         raise UsageError(f"{path.name}: a place must be a .rbxl or .rbxlx file.")
     universe_id, place_id, key_env = _place_target(args)
     result = _client(key_env).publish_place(universe_id, place_id, path, version_type=args.version_type)
