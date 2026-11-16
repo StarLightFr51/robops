@@ -363,6 +363,22 @@ def test_backup_without_scope_handles_scope_prefixed_ids(store, tmp_path):
     assert set(data["profiles"]) == {"1", "2", "3"}
 
 
+@pytest.mark.parametrize("name", ["b.json", "b.json.gz"])
+def test_failed_backup_leaves_no_partial_file(tmp_path, name):
+    """The listing is refused on its second page: no truncated copy of players' data stays on disk."""
+    class Client:
+        def list_entry_ids(self, universe_id, datastore, scope=None):
+            yield from (f"PLAYER_{i}" for i in range(100))
+            raise pl.RobloxApiError(403, "Missing permission universe-datastores.objects:list")
+
+        def get_entry(self, universe_id, datastore, key, scope=None):
+            return {"value": profile({"coins": 1})}
+
+    with pytest.raises(pl.RobloxApiError, match="403"):
+        pl.backup_players(Client(), 99, pl.PlayersConfig(), tmp_path / "backups" / name)  # type: ignore[arg-type]
+    assert list((tmp_path / "backups").iterdir()) == []
+
+
 def test_split_scoped():
     assert pl.split_scoped("global/PLAYER_1", None) == ("global", "PLAYER_1")
     assert pl.split_scoped("global/PLAYER_1", "global") == ("global", "PLAYER_1")

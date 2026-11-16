@@ -444,22 +444,27 @@ def backup_players(
                 return
 
     keys = matching_keys()
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, 16))) as pool, _open_text(tmp_path, "w") as fh:
-        fh.write(json.dumps(header, ensure_ascii=False)[:-1] + ', "profiles": {')
-        first = True
-        for chunk in _chunks(keys, 64):
-            for key, record, error in pool.map(fetch, chunk):
-                if error:
-                    errors[cfg.user_id(key)] = error
-                    continue
-                fh.write(("" if first else ",") + "\n  " + json.dumps(cfg.user_id(key)) + ": "
-                         + json.dumps(record, ensure_ascii=False, separators=(",", ":")))
-                first = False
-                count += 1
-            if progress:
-                progress(count)
-        fh.write("\n}, " + f'"count": {count}, "errors": ' + json.dumps(errors, ensure_ascii=False) + "}\n")
-    os.replace(tmp_path, out_path)
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, 16))) as pool, _open_text(tmp_path, "w") as fh:
+            fh.write(json.dumps(header, ensure_ascii=False)[:-1] + ', "profiles": {')
+            first = True
+            for chunk in _chunks(keys, 64):
+                for key, record, error in pool.map(fetch, chunk):
+                    if error:
+                        errors[cfg.user_id(key)] = error
+                        continue
+                    fh.write(("" if first else ",") + "\n  " + json.dumps(cfg.user_id(key)) + ": "
+                             + json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+                    first = False
+                    count += 1
+                if progress:
+                    progress(count)
+            fh.write("\n}, " + f'"count": {count}, "errors": ' + json.dumps(errors, ensure_ascii=False) + "}\n")
+        os.replace(tmp_path, out_path)
+    except BaseException:
+        # Listing refused halfway, disk full, Ctrl+C…: don't leave a truncated file of players' personal data.
+        tmp_path.unlink(missing_ok=True)
+        raise
     return BackupResult(out_path, count, errors, other_count, others)
 
 
