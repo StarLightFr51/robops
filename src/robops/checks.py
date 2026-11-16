@@ -17,12 +17,18 @@ class Finding:
         return asdict(self)
 
 
-def check_environment(cfg: Config, name: str) -> tuple[Environment | None, list[Finding]]:
-    """Validates the environment (fields, ${VAR}, files, API key presence) without any network call."""
+def check_environment(cfg: Config, name: str, *,
+                      key_env: str | None = None) -> tuple[Environment | None, list[Finding]]:
+    """Validates the environment (fields, ${VAR}, files, API key presence) without any network call.
+
+    `key_env` overrides the variable holding the API key (--api-key-env), as for `robops deploy`.
+    """
     try:
         env = cfg.env(name)
     except ConfigError as exc:
         return None, [Finding("error", str(exc))]
+    if key_env:
+        env.api_key_env = key_env
     findings = [Finding("ok", f"universe {env.universe_id}, {len(env.places)} place(s), version {env.version_type}")]
     if env.build_command:
         findings.append(Finding("info", f"build: {env.build_command}"))

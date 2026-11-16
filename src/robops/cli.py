@@ -580,7 +580,7 @@ def cmd_check(args) -> int:
     problems = 0
     for name in names:
         with out.group(f"Environment {name}"):
-            env, findings = check_environment(cfg, name)
+            env, findings = check_environment(cfg, name, key_env=args.api_key_env)
             for finding in findings:
                 printers[finding.level](finding.message)
             problems += sum(1 for f in findings if f.level == "error")

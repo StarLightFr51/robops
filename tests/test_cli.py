@@ -215,6 +215,23 @@ def test_check_valid_config_offline_and_online(repo, monkeypatch, capsys):
     assert cli.main(["check", "--online"]) == 1
 
 
+def test_check_honours_api_key_env(repo, monkeypatch, capsys):
+    """--api-key-env changes the variable read by `check`, as it does for `deploy`."""
+    monkeypatch.setenv("MY_STAGING_KEY", "k")
+    keys = []
+    monkeypatch.setattr(cli, "_client", lambda env_name: keys.append(env_name) or _Reachable())
+    assert cli.main(["check", "--online", "--api-key-env", "MY_STAGING_KEY"]) == 0
+    assert keys == ["MY_STAGING_KEY"]
+    assert "ROBLOX_API_KEY is not set" not in capsys.readouterr().err
+    assert cli.main(["check", "staging", "--online", "--api-key-env", "MISSING_KEY"]) == 1
+    assert "MISSING_KEY is not set" in capsys.readouterr().err
+
+
+class _Reachable:
+    def get_place(self, universe_id, place_id):
+        return {"displayName": "My game"}
+
+
 def test_check_reports_missing_datastore_file(repo, capsys):
     (repo / "robops.toml").write_text(CONFIG + "\n[[environments.staging.datastores]]\nname = 'C'\nfile = 'nope.json'\n", encoding="utf-8")
     assert cli.main(["check"]) == 1
