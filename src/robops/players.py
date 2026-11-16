@@ -222,7 +222,7 @@ def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ())
         result = {}
     else:
         raise PlayerError(f"Data is {_json_kind(data)}, not an object: --set / --unset can't change it. "
-                          "Use --data-file to replace it entirely.")
+                          "Replace the whole Data with --data-file.")
     node: Any
     for item in sets:
         if "=" not in item:
@@ -260,10 +260,33 @@ def apply_edits(data: Any, sets: Iterable[str] = (), unsets: Iterable[str] = ())
     return result
 
 
+def _as_luau(value: Any) -> Any:
+    """The value as a game reads it: one number type (1 and 1.0 are equal), and an empty
+    object is the same empty table as an empty list (Roblox stores {} as [])."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: _as_luau(v) for k, v in value.items()} if value else []
+    if isinstance(value, list):
+        return [_as_luau(v) for v in value]
+    return value
+
+
+def same_json(a: Any, b: Any) -> bool:
+    """Equality as the game sees it. Not Python's ==, for which True == 1: a game tells `true` from `1`.
+
+    Compared as JSON text (key order ignored), after _as_luau.
+    """
+    def text(value: Any) -> str:
+        return json.dumps(_as_luau(value), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+    return a is b or text(a) == text(b)
+
+
 def changed_fields(before: Any, after: Any, prefix: str = "") -> list[str]:
     """Readable list of the Data fields that change (two levels deep)."""
     if not isinstance(before, dict) or not isinstance(after, dict):
-        return [prefix or "Data"] if before != after else []
+        return [prefix or "Data"] if not same_json(before, after) else []
     changes: list[str] = []
     for key in sorted(set(before) | set(after), key=str):
         name = f"{prefix}{key}"
@@ -271,7 +294,7 @@ def changed_fields(before: Any, after: Any, prefix: str = "") -> list[str]:
             changes.append(f"+ {name}")
         elif key not in after:
             changes.append(f"- {name}")
-        elif before[key] != after[key]:
+        elif not same_json(before[key], after[key]):
             if isinstance(before[key], dict) and isinstance(after[key], dict) and not prefix:
                 changes.extend(changed_fields(before[key], after[key], f"{name}."))
             else:
@@ -460,11 +483,13 @@ def backup_players(
                 if progress:
                     progress(count)
             fh.write("\n}, " + f'"count": {count}, "errors": ' + json.dumps(errors, ensure_ascii=False) + "}\n")
-        os.replace(tmp_path, out_path)
     except BaseException:
         # Listing refused halfway, disk full, Ctrl+C…: don't leave a truncated file of players' personal data.
         tmp_path.unlink(missing_ok=True)
         raise
+    # Outside the cleanup: if the rename fails (on Windows, another program has the old file open),
+    # the complete backup stays in the .tmp file instead of being deleted.
+    os.replace(tmp_path, out_path)
     return BackupResult(out_path, count, errors, other_count, others)
 
 

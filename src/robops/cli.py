@@ -29,6 +29,7 @@ from .deploy import (
 )
 
 EXIT_OK, EXIT_FAILURE, EXIT_USAGE = 0, 1, 2
+EXIT_DIFFERENT = 3      # ds diff --exit-code: something differs (1 and 2 stay errors)
 
 
 class UsageError(Exception):
@@ -334,7 +335,7 @@ def cmd_ds_diff(args) -> int:
         differences += created + changed
         _status(f"{datastore}: {created} to create, {changed} to change, "
                 f"{len(diffs) - created - changed} already up to date.")
-    return EXIT_FAILURE if args.exit_code and differences else EXIT_OK
+    return EXIT_DIFFERENT if args.exit_code and differences else EXIT_OK
 
 
 def cmd_ds_stores(args) -> int:
@@ -567,6 +568,12 @@ def cmd_player_edit(args) -> int:
             data = json.loads(Path(args.data_file).read_text(encoding="utf-8-sig"))
         except (OSError, ValueError) as exc:          # ValueError: invalid JSON, or not UTF-8 text
             raise UsageError(f"{args.data_file} unreadable: {exc}") from None
+        if data == []:                                # an empty Luau table, as Roblox exports it
+            data = {}
+        if not isinstance(data, dict):
+            # null would remove Data from the profile; a number or a list would break ProfileStore in the game.
+            raise UsageError(f"{args.data_file} must contain a JSON object: the player's whole Data "
+                             f"(it holds {type(data).__name__ if data is not None else 'null'}).")
     new_data = pl.apply_edits(data, args.set or [], args.unset or [])
     changes = pl.changed_fields(current.value.get("Data"), new_data)
     if not changes:
@@ -997,7 +1004,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file", nargs="?", help="JSON file {key: value}")
     _add_ds_common(p)
     p.add_argument("--workers", type=int, default=4, help="parallel reads (1 to 16, default 4)")
-    p.add_argument("--exit-code", action="store_true", help="exit with 1 when something differs (for CI)")
+    p.add_argument("--exit-code", action="store_true", help="exit with 3 when something differs, for CI (1 and 2 stay errors)")
     p.set_defaults(func=cmd_ds_diff)
 
     p = ds.add_parser("stores", parents=[common], help="list the experience's DataStores")

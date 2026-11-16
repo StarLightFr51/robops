@@ -282,6 +282,33 @@ def test_edit_refuses_to_replace_a_value_and_reads_data_files_with_a_bom(store, 
     assert store.patches[-1][1]["value"]["Data"] == {"coins": 99}
 
 
+@pytest.mark.parametrize("content", ["null", "5", '"text"', "[1, 2]"])
+def test_edit_data_file_must_hold_an_object(store, tmp_path, capsys, content):
+    """null would remove Data from the profile; a number or a list would break ProfileStore in the game."""
+    data_file = tmp_path / "data.json"
+    data_file.write_text(content, encoding="utf-8")
+    assert run("edit", "1", "--data-file", str(data_file)) == 2
+    assert store.patches == [] and "must contain a JSON object" in capsys.readouterr().err
+
+
+def test_edit_data_file_with_an_empty_table(store, tmp_path):
+    data_file = tmp_path / "data.json"
+    data_file.write_text("[]", encoding="utf-8")                    # how Roblox exports an empty table
+    assert run("edit", "1", "--data-file", str(data_file)) == 0
+    assert store.patches[-1][1]["value"]["Data"] == {}
+
+
+def test_changed_fields_sees_values_as_the_game_does():
+    assert pl.changed_fields({"flag": 1, "n": 2}, {"flag": True, "n": 2.0}) == ["~ flag"]   # Python: True == 1
+    assert pl.changed_fields({"bag": []}, {"bag": {}}) == []
+
+
+def test_edit_from_1_to_true_is_written(store):
+    store.entries["PLAYER_1"]["value"]["Data"] = {"vip": 1}
+    assert run("edit", "1", "--set", "vip=true") == 0
+    assert store.patches[-1][1]["value"]["Data"] == {"vip": True}
+
+
 def test_delete_requires_yes(store):
     assert run("delete", "1") == 2
     assert run("delete", "1", "--yes") == 0
@@ -386,6 +413,18 @@ def test_failed_backup_leaves_no_partial_file(tmp_path, name):
     with pytest.raises(pl.RobloxApiError, match="403"):
         pl.backup_players(Client(), 99, pl.PlayersConfig(), tmp_path / "backups" / name)  # type: ignore[arg-type]
     assert list((tmp_path / "backups").iterdir()) == []
+
+
+def test_complete_backup_is_kept_when_the_rename_fails(store, tmp_path, monkeypatch):
+    """On Windows the rename fails while another program has the old file open: the backup must survive."""
+    def locked(src, dst):
+        raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+    monkeypatch.setattr(pl.os, "replace", locked)
+    client = OpenCloudClient("k", session=FakeSession(router=store), sleep=lambda s: None)
+    with pytest.raises(PermissionError):
+        pl.backup_players(client, 99, pl.PlayersConfig(), tmp_path / "b.json")
+    kept = json.loads((tmp_path / "b.json.tmp").read_text(encoding="utf-8"))
+    assert kept["count"] == 3
 
 
 def test_split_scoped():

@@ -317,7 +317,7 @@ def test_ds_diff_shows_what_an_import_would_change_without_writing(repo, game_co
     assert "GameConfig: 1 to create, 1 to change, 2 already up to date." in text.err
     assert game_config.patches == [] and game_config.deletes == []         # read only
 
-    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99", "--exit-code"]) == 1
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99", "--exit-code"]) == 3
     (repo / "seed.json").write_text(json.dumps({"motd": "Hello", "shop": [1, 2]}), encoding="utf-8")
     assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99", "--exit-code"]) == 0
 
@@ -358,3 +358,19 @@ def test_value_file_that_is_not_utf8_is_a_usage_error(repo, game_config, capsys)
     (repo / "value.json").write_bytes('"café"'.encode("cp1252"))
     assert cli.main(["ds", "set", "GameConfig", "motd", "--file", "value.json", "--universe-id", "99"]) == 2
     assert "is not UTF-8 text" in capsys.readouterr().err
+
+
+def test_ds_diff_exit_code_tells_a_difference_from_an_error(repo, monkeypatch, capsys):
+    """3 = something differs; a refused key (403) stays 1, so a CI script can tell them apart."""
+    monkeypatch.setenv("ROBLOX_API_KEY", "k")
+    session = FakeSession(router=lambda m, u, kw: FakeResponse(403, {"message": "Forbidden"}))
+    monkeypatch.setattr(cli.OpenCloudClient, "__init__", _patched_init(session))
+    (repo / "seed.json").write_text('{"motd": "Hello"}', encoding="utf-8")
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99", "--exit-code"]) == 1
+
+
+def test_ds_diff_shows_a_field_that_goes_from_1_to_true(repo, game_config, capsys):
+    game_config.entries["event"]["value"] = {"x2": 1}
+    (repo / "seed.json").write_text('{"event": {"x2": true}}', encoding="utf-8")
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["~ GameConfig/event", "    ~ x2"]

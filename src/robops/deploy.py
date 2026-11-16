@@ -27,7 +27,7 @@ from typing import Any
 from . import output as out
 from .client import OpenCloudClient, RobloxApiError, without_nulls
 from .config import DatastoreSeed, Environment, PlaceConfig
-from .players import changed_fields
+from .players import changed_fields, same_json
 
 PLACE_SUFFIXES = (".rbxl", ".rbxlx")     # the only files Open Cloud accepts as a place
 
@@ -207,13 +207,18 @@ def sync_entry(
 
 def read_entry(client: OpenCloudClient, universe_id: int, datastore: str, key: str, *,
                scope: str | None = None) -> dict | None:
-    """The entry (value, users, attributes, etag…), or None if it does not exist."""
+    """The entry (value, users, attributes, etag…), or None if it does not exist.
+
+    A deleted entry is kept by Roblox (state DELETED) until it is purged, 30 days later: for
+    the game it no longer exists, so it is treated as missing (and gets written again).
+    """
     try:
-        return client.get_entry(universe_id, datastore, key, scope=scope)
+        entry = client.get_entry(universe_id, datastore, key, scope=scope)
     except RobloxApiError as exc:
         if exc.status == 404:
             return None
         raise
+    return None if entry.get("state") == "DELETED" else entry
 
 
 def _write_over(client: OpenCloudClient, universe_id: int, datastore: str, key: str, value: Any,
@@ -228,27 +233,13 @@ def _write_over(client: OpenCloudClient, universe_id: int, datastore: str, key: 
     )
 
 
-def _as_luau(value: Any) -> Any:
-    """Luau has a single number type: 1 and 1.0 are the same value."""
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    if isinstance(value, dict):
-        return {k: _as_luau(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_as_luau(v) for v in value]
-    return value
-
-
 def same_value(stored: Any, wanted: Any) -> bool:
     """True if the DataStore already holds `wanted`, as robops would write it (without null fields).
 
-    Compared as JSON text: in Python True == 1, but for a game `true` and `1` are different.
-    Key order does not matter, and 1 / 1.0 are equal (one number type in Luau).
+    Equality as the game sees it (players.same_json): `true` is not `1`, but 1 and 1.0 are equal,
+    key order does not matter, and {} is the same empty table as [].
     """
-    def text(value: Any) -> str:
-        return json.dumps(_as_luau(value), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-
-    return text(stored) == text(without_nulls(wanted))
+    return same_json(stored, without_nulls(wanted))
 
 
 @dataclass
@@ -282,10 +273,13 @@ def diff_entries(
         fields = changed_fields(stored, new) if isinstance(stored, dict) and isinstance(new, dict) else []
         return EntryDiff(key, "change", fields)
 
-    if not data:
-        return []
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, 16, len(data)))) as pool:
-        return list(pool.map(compare, data.items()))
+    items = list(data.items())
+    results: list[EntryDiff] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, 16))) as pool:
+        # By batches: after an error (403…) or Ctrl+C, at most one batch of reads is still waited for.
+        for start in range(0, len(items), 64):
+            results.extend(pool.map(compare, items[start:start + 64]))
+    return results
 
 
 # --------------------------------------------------------------- deployment

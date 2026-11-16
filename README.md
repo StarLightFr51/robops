@@ -248,7 +248,7 @@ robops ds list PlayerData --prefix user_ --env staging
 robops ds export GameConfig --out backup.json --env production
 robops ds import GameConfig data/config.json --env production --dry-run
 robops ds diff GameConfig data/config.json --env production   # what an import would change (read only)
-robops ds diff --env production --exit-code       # the [[datastores]] of robops.toml; exit code 1 if they differ
+robops ds diff --env production --exit-code       # the [[datastores]] of robops.toml; exit code 3 if they differ
 robops ds delete GameConfig old_key --env staging
 robops ds snapshot --env production
 
@@ -259,7 +259,7 @@ robops dashboard
 robops mcp install
 ```
 
-Exit codes: `0` success, `1` Roblox/deployment failure, `2` configuration or usage error. An unexpected error prints a one-line message; `ROBOPS_DEBUG=1` shows the full Python traceback.
+Exit codes: `0` success, `1` Roblox/deployment failure, `2` configuration or usage error, `3` differences found by `ds diff --exit-code`. An unexpected error prints a one-line message; `ROBOPS_DEBUG=1` shows the full Python traceback.
 
 Publishing a place is never retried after a network error or a 5xx answer once the file may have reached Roblox (that would create a second version): the message then asks you to check the place's version history.
 

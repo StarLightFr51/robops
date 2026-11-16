@@ -194,3 +194,15 @@ def test_same_value_compares_values_as_the_game_sees_them():
     assert not same_value(1, True) and not same_value({"a": 0}, {"a": False})
     assert not same_value("1", 1) and not same_value([1, 2], [2, 1])
     assert not same_value({"a": 1}, {"a": 1, "b": 2})
+    assert same_value({"a": [], "b": []}, {"a": {}, "b": []})          # one empty table for the game
+    assert not same_value([], [0]) and not same_value({}, {"a": 1})
+
+
+def test_a_deleted_entry_is_written_again_even_with_the_same_value(project):
+    """Roblox keeps a deleted entry (state DELETED) for 30 days, but for the game it no longer exists."""
+    client = FakeClient(existing_entries={"motd": {"value": "Hello", "state": "DELETED", "etag": "e1"},
+                                          "event": {"value": {"x2": True}, "state": "ACTIVE", "etag": "e2"}})
+    report = run(project, DeployOptions(with_datastores=True, restart=False), client)
+    assert [c[2] for c in client.calls if c[0] == "set_entry"] == ["motd"]
+    assert client.etags == [None]                   # recreated, not conditioned on the deleted revision
+    assert (report.datastore_writes, report.datastore_unchanged) == (1, 1)
