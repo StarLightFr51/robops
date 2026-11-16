@@ -105,7 +105,10 @@ def _parse_value(args) -> Any:
     if args.value is not None and args.file is not None:
         raise UsageError("Use --value OR --file, not both.")
     if args.file is not None:
-        text = Path(args.file).read_text(encoding="utf-8")
+        try:
+            text = Path(args.file).read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise UsageError(f"{args.file} is not UTF-8 text: save it as UTF-8 ({exc.reason}).") from None
     elif args.value is not None:
         text = args.value
     else:
@@ -259,7 +262,7 @@ def cmd_ds_export(args) -> int:
 def _read_json_object(path: Path) -> dict[str, Any]:
     """A JSON file holding {"key": value, ...} (ds import, ds diff)."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))   # BOM accepted (PowerShell 5)
     except FileNotFoundError:
         raise UsageError(f"File not found: {path}") from None
     except UnicodeDecodeError as exc:
@@ -561,8 +564,8 @@ def cmd_player_edit(args) -> int:
     data = current.value.get("Data")
     if args.data_file:
         try:
-            data = json.loads(Path(args.data_file).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            data = json.loads(Path(args.data_file).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:          # ValueError: invalid JSON, or not UTF-8 text
             raise UsageError(f"{args.data_file} unreadable: {exc}") from None
     new_data = pl.apply_edits(data, args.set or [], args.unset or [])
     changes = pl.changed_fields(current.value.get("Data"), new_data)

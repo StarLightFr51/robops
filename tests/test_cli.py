@@ -340,3 +340,21 @@ def test_ds_diff_compares_the_datastores_of_the_environment(repo, game_config, c
 def test_ds_diff_usage_errors(repo, game_config, capsys, argv, message):
     assert cli.main(argv) == 2
     assert message in capsys.readouterr().err
+
+
+def test_json_files_saved_with_a_bom_are_accepted(repo, game_config, capsys):
+    """PowerShell 5: ConvertTo-Json | Out-File -Encoding utf8 writes a BOM before the JSON."""
+    (repo / "seed.json").write_bytes(b"\xef\xbb\xbf" + json.dumps({"motd": "Hello"}).encode("utf-8"))
+    assert cli.main(["ds", "diff", "GameConfig", "seed.json", "--universe-id", "99"]) == 0
+    assert cli.main(["ds", "import", "GameConfig", "seed.json", "--universe-id", "99", "--no-snapshot"]) == 0
+    assert cli.main(["ds", "set", "GameConfig", "motd", "--file", "seed.json", "--universe-id", "99"]) == 0
+    assert game_config.entries["motd"]["value"] == {"motd": "Hello"}
+    (repo / "robops.toml").write_text(CONFIG + "\n[[environments.staging.datastores]]\nname = 'C'\nfile = 'seed.json'\n",
+                                      encoding="utf-8")
+    assert cli.main(["check"]) == 0
+
+
+def test_value_file_that_is_not_utf8_is_a_usage_error(repo, game_config, capsys):
+    (repo / "value.json").write_bytes('"café"'.encode("cp1252"))
+    assert cli.main(["ds", "set", "GameConfig", "motd", "--file", "value.json", "--universe-id", "99"]) == 2
+    assert "is not UTF-8 text" in capsys.readouterr().err

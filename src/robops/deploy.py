@@ -152,7 +152,7 @@ def load_seed(seed: DatastoreSeed) -> dict[str, Any]:
     if not seed.file.is_file():
         raise DeployError(f"Data file not found for DataStore '{seed.name}': {seed.file}")
     try:
-        data = json.loads(seed.file.read_text(encoding="utf-8"))
+        data = json.loads(seed.file.read_text(encoding="utf-8-sig"))   # BOM accepted (PowerShell 5)
     except UnicodeDecodeError as exc:
         raise DeployError(f"{seed.file} is not UTF-8 text: save it as UTF-8 ({exc.reason}).") from exc
     except json.JSONDecodeError as exc:

@@ -141,3 +141,17 @@ def test_unknown_root_and_build_fields_fail_at_load(tmp_path):
         load_config(write(tmp_path, "[environment.a]\nuniverse_id = 1\n"))
     with pytest.raises(ConfigError, match="did you mean 'command'"):
         load_config(write(tmp_path, "[build]\ncommande = 'rojo build'\n[environments.a]\nuniverse_id = 1\n"))
+
+
+def test_file_saved_with_a_bom_is_read(tmp_path):
+    """Notepad before Windows 10 1903 and PowerShell 5 (Out-File -Encoding utf8) start the file with a BOM."""
+    path = tmp_path / "robops.toml"
+    path.write_bytes(b"\xef\xbb\xbf" + BASE.encode("utf-8"))
+    assert load_config(path).env("staging").universe_id == 111
+
+
+def test_file_that_is_not_utf8_is_a_clear_error(tmp_path):
+    path = tmp_path / "robops.toml"
+    path.write_bytes(BASE.replace("Game [STAGING]", "Jeu é").encode("cp1252"))    # saved as "ANSI"
+    with pytest.raises(ConfigError, match="is not UTF-8 text"):
+        load_config(path)

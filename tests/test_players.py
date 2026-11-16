@@ -273,6 +273,15 @@ def test_edit_dry_run_then_write(store, capsys):
     assert run("edit", "2", "--set", "coins=1", "--force") == 0
 
 
+def test_edit_refuses_to_replace_a_value_and_reads_data_files_with_a_bom(store, tmp_path, capsys):
+    assert run("edit", "1", "--set", "coins.gold=5") == 1                # coins is a number: refused, not replaced
+    assert store.patches == [] and "'coins' is a number (10), not an object" in capsys.readouterr().err
+    data_file = tmp_path / "data.json"
+    data_file.write_bytes(b"\xef\xbb\xbf" + b'{"coins": 99}')        # PowerShell 5 Out-File -Encoding utf8
+    assert run("edit", "1", "--data-file", str(data_file)) == 0
+    assert store.patches[-1][1]["value"]["Data"] == {"coins": 99}
+
+
 def test_delete_requires_yes(store):
     assert run("delete", "1") == 2
     assert run("delete", "1", "--yes") == 0
